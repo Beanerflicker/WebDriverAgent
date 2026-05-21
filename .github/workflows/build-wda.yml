@@ -5,7 +5,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: macos-13
 
     steps:
       - name: Checkout WebDriverAgent
@@ -16,34 +16,59 @@ jobs:
 
       - name: Resolve dependencies
         run: |
-          cd WebDriverAgent.xcodeproj
-          cd ..
           xcodebuild -resolvePackageDependencies \
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner
 
-      - name: Build (no code signing)
+      - name: Build
         run: |
-          xcodebuild build-for-testing \
+          xcodebuild build \
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner \
             -destination 'generic/platform=iOS' \
             -derivedDataPath ./build \
             CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            PRODUCT_BUNDLE_IDENTIFIER=com.facebook.WebDriverAgentRunner
+            PROVISIONING_PROFILE="" \
+            DEVELOPMENT_TEAM="" \
+            OTHER_CODE_SIGN_FLAGS="--deep"
 
-      - name: Package as IPA
+      - name: Find app and patch entitlements
         run: |
-          APP_PATH=$(find ./build -name "*.app" -not -path "*/PlugIns/*" | head -1)
-          echo "Found app at: $APP_PATH"
-          mkdir -p Payload
-          cp -r "$APP_PATH" Payload/
-          zip -r WebDriverAgent.ipa Payload/
-          echo "IPA size: $(du -sh WebDriverAgent.ipa)"
+          APP=$(find ./build -name "*.app" -not -path "*/PlugIns/*" | head -1)
+          echo "App found at: $APP"
 
-      - name: Upload IPA artifact
+          # Write entitlements compatible with free Apple ID sideloading
+          cat > entitlements.plist << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+            "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>get-task-allow</key>
+              <true/>
+              <key>application-identifier</key>
+              <string>$(AppIdentifierPrefix)com.facebook.WebDriverAgentRunner</string>
+              <key>keychain-access-groups</key>
+              <array>
+                  <string>$(AppIdentifierPrefix)com.facebook.WebDriverAgentRunner</string>
+              </array>
+          </dict>
+          </plist>
+          EOF
+
+          # Re-sign with patched entitlements (using ad-hoc identity since we have no cert)
+          codesign --force --deep --sign - \
+            --entitlements entitlements.plist \
+            "$APP"
+
+          # Package
+          mkdir -p Payload
+          cp -r "$APP" Payload/
+          zip -r WebDriverAgent.ipa Payload/
+          echo "Done. IPA size: $(du -sh WebDriverAgent.ipa)"
+
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: WebDriverAgent-IPA
