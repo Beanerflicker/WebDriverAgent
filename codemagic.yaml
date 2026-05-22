@@ -23,22 +23,31 @@ workflows:
             PROVISIONING_PROFILE="" \
             DEVELOPMENT_TEAM="" \
             CODE_SIGNING_REQUIRED=NO
-      - name: Find app
-        script: |
-          find ./build -name "*.app" | head -20
-          find ./build -name "Info.plist" | head -10
-      - name: Package IPA
+      - name: Sign and Package
         script: |
           APP=$(find ./build -name "*.app" \
             -not -path "*/PlugIns/*" | head -1)
-          echo "APP=$APP"
-          echo "Info.plist: $(test -f "$APP/Info.plist" && echo YES || echo NO)"
+          echo "Found: $APP"
+
+          # Sign every binary with ad-hoc signature
+          find "$APP" -type f | while read f; do
+            if file "$f" | grep -q "Mach-O"; then
+              codesign --force --sign - "$f" 2>/dev/null || true
+            fi
+          done
+
+          # Sign the full bundle
+          codesign --force --deep --sign - "$APP"
+
+          # Verify signature
+          codesign --verify --verbose "$APP" && echo "SIGNATURE VALID" || echo "SIGNATURE FAILED"
+
+          # Package
           mkdir -p /tmp/Payload
           cp -r "$APP" /tmp/Payload/
           cd /tmp
           /usr/bin/zip -r WebDriverAgent.zip Payload/
           mv WebDriverAgent.zip ~/WebDriverAgent.ipa
-          echo "Size: $(du -sh ~/WebDriverAgent.ipa)"
-          ls -la ~/WebDriverAgent.ipa
+          echo "Final size: $(du -sh ~/WebDriverAgent.ipa)"
     artifacts:
       - ~/WebDriverAgent.ipa
