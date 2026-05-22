@@ -27,13 +27,36 @@ workflows:
             DEVELOPMENT_TEAM="" \
             CODE_SIGNING_REQUIRED=NO \
             EXCLUDED_ARCHS=x86_64
+      - name: Find all apps
+        script: |
+          echo "=== ALL APP BUNDLES ==="
+          find ./build -name "*.app" | sort
+          echo "=== ALL INFO.PLIST FILES ==="
+          find ./build -name "Info.plist" | sort
       - name: Package
         script: |
-          APP=$(find ./build -name "*.app" \
-            -not -path "*/PlugIns/*" | head -1)
-          echo "Found: $APP"
+          # Find the Runner app specifically - it has the main executable
+          APP=$(find ./build -name "WebDriverAgentRunner-Runner.app" \
+            -not -path "*.dSYM*" | head -1)
+          
+          # If not found try any .app not in dSYM
+          if [ -z "$APP" ]; then
+            APP=$(find ./build -name "*.app" \
+              -not -path "*.dSYM*" \
+              -not -path "*.xctest*" | head -1)
+          fi
 
-          # Convert ALL plists to XML first
+          echo "Using app: $APP"
+          echo "App contents:"
+          ls -la "$APP"
+
+          # Verify Info.plist exists
+          if [ ! -f "$APP/Info.plist" ]; then
+            echo "ERROR: No Info.plist found"
+            exit 1
+          fi
+
+          # Convert plists to XML
           find "$APP" -name "*.plist" | while read plist; do
             plutil -convert xml1 "$plist" 2>/dev/null || true
           done
@@ -43,8 +66,7 @@ workflows:
             "Set :CFBundleIdentifier com.beanerflicker.wda" \
             "$APP/Info.plist"
 
-          # Verify bundle ID was set
-          echo "Bundle ID: $(/usr/libexec/PlistBuddy -c \
+          echo "Bundle ID set to: $(/usr/libexec/PlistBuddy -c \
             "Print :CFBundleIdentifier" "$APP/Info.plist")"
 
           # Sign
@@ -62,5 +84,7 @@ workflows:
           /usr/bin/zip -r WebDriverAgent.ipa Payload/
           cp WebDriverAgent.ipa ~/WebDriverAgent.ipa
           echo "Final size: $(du -sh ~/WebDriverAgent.ipa)"
+          echo "IPA contents:"
+          zipinfo ~/WebDriverAgent.ipa | head -20
     artifacts:
       - ~/WebDriverAgent.ipa
