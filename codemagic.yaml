@@ -29,14 +29,13 @@ workflows:
             EXCLUDED_ARCHS=x86_64
       - name: Package
         script: |
-          cd ./build/Build/Products/Debug-iphoneos
+          APP="./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
+          BINARY="$APP/WebDriverAgentRunner-Runner"
 
-          APP="WebDriverAgentRunner-Runner.app"
           echo "App exists: $(test -d "$APP" && echo YES || echo NO)"
-          echo "Info.plist exists: $(test -f "$APP/Info.plist" && echo YES || echo NO)"
-          echo "File count in app: $(find "$APP" -type f | wc -l)"
+          echo "Binary exists: $(test -f "$BINARY" && echo YES || echo NO)"
 
-          # Convert plists to XML
+          # Convert all plists to XML
           find "$APP" -name "*.plist" | while read plist; do
             plutil -convert xml1 "$plist" 2>/dev/null || true
           done
@@ -49,23 +48,49 @@ workflows:
           echo "Bundle ID: $(/usr/libexec/PlistBuddy -c \
             "Print :CFBundleIdentifier" "$APP/Info.plist")"
 
-          # Sign
+          # Write entitlements file
+          cat > /tmp/entitlements.plist << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+            "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>get-task-allow</key>
+              <true/>
+              <key>application-identifier</key>
+              <string>com.beanerflicker.wda</string>
+              <key>keychain-access-groups</key>
+              <array>
+                  <string>com.beanerflicker.wda</string>
+              </array>
+          </dict>
+          </plist>
+          EOF
+
+          # Sign every framework and binary with entitlements
           find "$APP" -type f | while read f; do
             if file "$f" | grep -q "Mach-O"; then
-              codesign --force --sign - "$f" 2>/dev/null || true
+              codesign --force --sign - \
+                --entitlements /tmp/entitlements.plist \
+                "$f" 2>/dev/null || true
             fi
           done
-          codesign --force --deep --sign - "$APP"
 
-          # Package from right here
-          mkdir -p Payload
-          cp -rp "$APP" Payload/
-          
-          echo "Files in Payload: $(find Payload -type f | wc -l)"
-          
-          /usr/bin/zip -r ~/WebDriverAgent.ipa Payload/
-          
+          # Sign the whole app bundle with entitlements
+          codesign --force --deep --sign - \
+            --entitlements /tmp/entitlements.plist \
+            "$APP"
+
+          # Verify entitlements are in the binary
+          echo "Entitlements in binary:"
+          codesign -d --entitlements - "$BINARY" 2>/dev/null || true
+
+          # Package
+          mkdir -p /tmp/Payload
+          cp -rp "$APP" /tmp/Payload/
+          cd /tmp
+          /usr/bin/zip -r WebDriverAgent.ipa Payload/
+          cp WebDriverAgent.ipa ~/WebDriverAgent.ipa
           echo "Final size: $(du -sh ~/WebDriverAgent.ipa)"
-          echo "Info.plist in IPA: $(zipinfo ~/WebDriverAgent.ipa | grep Info.plist | head -5)"
     artifacts:
       - ~/WebDriverAgent.ipa
