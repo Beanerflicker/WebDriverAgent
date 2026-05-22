@@ -1,4 +1,33 @@
-- name: Package
+workflows:
+  build-wda:
+    name: Build WDA IPA
+    max_build_duration: 25
+    environment:
+      xcode: 26.4
+    scripts:
+      - name: Resolve packages
+        script: |
+          xcodebuild -resolvePackageDependencies \
+            -project WebDriverAgent.xcodeproj \
+            -scheme WebDriverAgentRunner
+      - name: Build
+        script: |
+          xcodebuild \
+            -project WebDriverAgent.xcodeproj \
+            -scheme WebDriverAgentRunner \
+            -configuration Debug \
+            -sdk iphoneos \
+            -arch arm64 \
+            -derivedDataPath ./build \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE="" \
+            DEVELOPMENT_TEAM="" \
+            CODE_SIGNING_REQUIRED=NO \
+            EXCLUDED_ARCHS=x86_64
+      - name: Package
         script: |
           APP="./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
 
@@ -11,19 +40,20 @@
           /usr/libexec/PlistBuddy -c \
             "Set :CFBundleIdentifier com.beanerflicker.wda" \
             "$APP/Info.plist"
+          echo "Bundle ID: $(/usr/libexec/PlistBuddy -c \
+            "Print :CFBundleIdentifier" "$APP/Info.plist")"
 
-          # Remove the Testing.framework dependency from XCTestCore
-          # so it doesn't try to load lib_TestingInterop.dylib
+          # Remove Testing dependency from XCTestCore
           XCTESTCORE="$APP/Frameworks/XCTestCore.framework/XCTestCore"
-          echo "Removing Testing dependency from XCTestCore..."
+          echo "Patching XCTestCore..."
           install_name_tool -change \
             "@rpath/Testing.framework/Testing" \
             "/usr/lib/swift/Testing.framework/Testing" \
             "$XCTESTCORE" 2>/dev/null || true
 
-          # Also patch Testing.framework itself
+          # Patch Testing.framework rpath
           TESTING="$APP/Frameworks/Testing.framework/Testing"
-          echo "Patching Testing.framework rpaths..."
+          echo "Patching Testing.framework..."
           install_name_tool -add_rpath "/usr/lib/swift" \
             "$TESTING" 2>/dev/null || true
 
@@ -49,7 +79,7 @@
           </plist>
           EOF
 
-          # Sign with entitlements
+          # Sign everything with entitlements
           find "$APP" -type f | while read f; do
             if file "$f" | grep -q "Mach-O"; then
               codesign --force --sign - \
