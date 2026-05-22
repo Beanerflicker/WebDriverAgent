@@ -32,9 +32,6 @@ workflows:
           APP="./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
           BINARY="$APP/WebDriverAgentRunner-Runner"
 
-          echo "App exists: $(test -d "$APP" && echo YES || echo NO)"
-          echo "Binary exists: $(test -f "$BINARY" && echo YES || echo NO)"
-
           # Convert all plists to XML
           find "$APP" -name "*.plist" | while read plist; do
             plutil -convert xml1 "$plist" 2>/dev/null || true
@@ -44,11 +41,17 @@ workflows:
           /usr/libexec/PlistBuddy -c \
             "Set :CFBundleIdentifier com.beanerflicker.wda" \
             "$APP/Info.plist"
-
           echo "Bundle ID: $(/usr/libexec/PlistBuddy -c \
             "Print :CFBundleIdentifier" "$APP/Info.plist")"
 
-          # Write entitlements file
+          # Remove frameworks that cause crashes on iOS 26
+          rm -rf "$APP/Frameworks/Testing.framework"
+          rm -f "$APP/Frameworks/libXCTestSwiftSupport.dylib"
+          echo "Cleaned incompatible frameworks"
+          echo "Remaining frameworks:"
+          ls "$APP/Frameworks/"
+
+          # Write entitlements
           cat > /tmp/entitlements.plist << 'EOF'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -67,7 +70,7 @@ workflows:
           </plist>
           EOF
 
-          # Sign every framework and binary with entitlements
+          # Sign with entitlements
           find "$APP" -type f | while read f; do
             if file "$f" | grep -q "Mach-O"; then
               codesign --force --sign - \
@@ -75,15 +78,9 @@ workflows:
                 "$f" 2>/dev/null || true
             fi
           done
-
-          # Sign the whole app bundle with entitlements
           codesign --force --deep --sign - \
             --entitlements /tmp/entitlements.plist \
             "$APP"
-
-          # Verify entitlements are in the binary
-          echo "Entitlements in binary:"
-          codesign -d --entitlements - "$BINARY" 2>/dev/null || true
 
           # Package
           mkdir -p /tmp/Payload
