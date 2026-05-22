@@ -43,22 +43,51 @@ workflows:
           echo "Bundle ID: $(/usr/libexec/PlistBuddy -c \
             "Print :CFBundleIdentifier" "$APP/Info.plist")"
 
-          # Remove Testing dependency from XCTestCore
+          # Search everywhere for Testing.framework and lib_TestingInterop
+          echo "=== SEARCHING FOR TESTING LIBS ==="
+          find /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform \
+            -name "Testing" -o -name "*TestingInterop*" 2>/dev/null | head -20
+          find /Applications/Xcode.app/Contents/Developer/Toolchains \
+            -name "*TestingInterop*" 2>/dev/null | head -10
+          find /Library -name "*TestingInterop*" 2>/dev/null | head -5
+          echo "=== END SEARCH ==="
+
+          # Patch XCTestCore to find Testing.framework via @loader_path
+          # (looks in the same Frameworks folder where we bundle it)
           XCTESTCORE="$APP/Frameworks/XCTestCore.framework/XCTestCore"
-          echo "Patching XCTestCore..."
+          echo "Current XCTestCore deps:"
+          otool -L "$XCTESTCORE" | grep Testing
+
           install_name_tool -change \
-            "@rpath/Testing.framework/Testing" \
             "/usr/lib/swift/Testing.framework/Testing" \
+            "@loader_path/../Testing.framework/Testing" \
             "$XCTESTCORE" 2>/dev/null || true
 
-          # Patch Testing.framework rpath
+          install_name_tool -change \
+            "@rpath/Testing.framework/Testing" \
+            "@loader_path/../Testing.framework/Testing" \
+            "$XCTESTCORE" 2>/dev/null || true
+
+          echo "After patch:"
+          otool -L "$XCTESTCORE" | grep Testing
+
+          # Patch Testing.framework to find lib_TestingInterop via @loader_path
           TESTING="$APP/Frameworks/Testing.framework/Testing"
-          echo "Patching Testing.framework..."
-          install_name_tool -add_rpath "/usr/lib/swift" \
+          echo "Testing.framework deps:"
+          otool -L "$TESTING" | grep -i interop
+
+          install_name_tool -change \
+            "@rpath/lib_TestingInterop.dylib" \
+            "@loader_path/../../lib_TestingInterop.dylib" \
             "$TESTING" 2>/dev/null || true
 
-          echo "Frameworks:"
-          ls "$APP/Frameworks/"
+          install_name_tool -change \
+            "/usr/lib/swift/lib_TestingInterop.dylib" \
+            "@loader_path/../../lib_TestingInterop.dylib" \
+            "$TESTING" 2>/dev/null || true
+
+          echo "After patch:"
+          otool -L "$TESTING" | grep -i interop
 
           # Write entitlements
           cat > /tmp/entitlements.plist << 'EOF'
@@ -79,7 +108,7 @@ workflows:
           </plist>
           EOF
 
-          # Sign everything with entitlements
+          # Sign everything
           find "$APP" -type f | while read f; do
             if file "$f" | grep -q "Mach-O"; then
               codesign --force --sign - \
