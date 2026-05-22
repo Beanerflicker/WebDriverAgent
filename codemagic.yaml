@@ -30,7 +30,6 @@ workflows:
       - name: Package
         script: |
           APP="./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
-          BINARY="$APP/WebDriverAgentRunner-Runner"
 
           # Convert all plists to XML
           find "$APP" -name "*.plist" | while read plist; do
@@ -44,11 +43,28 @@ workflows:
           echo "Bundle ID: $(/usr/libexec/PlistBuddy -c \
             "Print :CFBundleIdentifier" "$APP/Info.plist")"
 
-          # Remove frameworks that cause crashes on iOS 26
-          rm -rf "$APP/Frameworks/Testing.framework"
-          rm -f "$APP/Frameworks/libXCTestSwiftSupport.dylib"
-          echo "Cleaned incompatible frameworks"
-          echo "Remaining frameworks:"
+          # Find and bundle lib_TestingInterop.dylib
+          echo "=== Searching for lib_TestingInterop.dylib ==="
+          find /Applications/Xcode.app -name "lib_TestingInterop.dylib" 2>/dev/null | head -5
+          find /usr/lib/swift -name "lib_TestingInterop.dylib" 2>/dev/null | head -5
+
+          LIB=$(find /Applications/Xcode.app -name "lib_TestingInterop.dylib" \
+            -path "*iphoneos*" 2>/dev/null | head -1)
+
+          if [ -z "$LIB" ]; then
+            LIB=$(find /Applications/Xcode.app -name "lib_TestingInterop.dylib" \
+              2>/dev/null | head -1)
+          fi
+
+          if [ -n "$LIB" ]; then
+            echo "Found at: $LIB"
+            cp "$LIB" "$APP/Frameworks/"
+            echo "Bundled lib_TestingInterop.dylib"
+          else
+            echo "WARNING: lib_TestingInterop.dylib not found on build machine"
+          fi
+
+          echo "Frameworks after fix:"
           ls "$APP/Frameworks/"
 
           # Write entitlements
