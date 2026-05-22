@@ -28,10 +28,13 @@ workflows:
           APP=$(find ./build -name "*.app" \
             -not -path "*/PlugIns/*" | head -1)
           echo "Found: $APP"
-          ls "$APP"
+          echo "Info.plist exists: $(test -f "$APP/Info.plist" && echo YES || echo NO)"
+          ls -la "$APP"
+          cd ./build/Build/Products
           mkdir -p Payload
-          cp -r "$APP" Payload/
-          zip -r WebDriverAgent.ipa Payload/
-          echo "Done: $(du -sh WebDriverAgent.ipa)"
+          cp -r "$(basename $APP)" Payload/
+          /usr/bin/zip -r WebDriverAgent.zip Payload/
+          mv WebDriverAgent.zip WebDriverAgent.ipa
+          echo "IPA size: $(du -sh WebDriverAgent.ipa)"
     artifacts:
-      - WebDriverAgent.ipa
+      - build/Build/Products/WebDriverAgent.ipa
