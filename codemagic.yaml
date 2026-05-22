@@ -3,7 +3,7 @@ workflows:
     name: Build WDA IPA
     max_build_duration: 25
     environment:
-      xcode: 15.4
+      xcode: 26.4
     scripts:
       - name: Resolve packages
         script: |
