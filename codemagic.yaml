@@ -29,25 +29,25 @@ workflows:
             -not -path "*/PlugIns/*" | head -1)
           echo "Found: $APP"
 
-          # Sign every binary with ad-hoc signature
+          # Convert all plists to XML format so AltStore can read them
+          find "$APP" -name "*.plist" | while read plist; do
+            plutil -convert xml1 "$plist" 2>/dev/null || true
+          done
+
+          # Ad-hoc sign every binary
           find "$APP" -type f | while read f; do
             if file "$f" | grep -q "Mach-O"; then
               codesign --force --sign - "$f" 2>/dev/null || true
             fi
           done
-
-          # Sign the full bundle
           codesign --force --deep --sign - "$APP"
-
-          # Verify signature
-          codesign --verify --verbose "$APP" && echo "SIGNATURE VALID" || echo "SIGNATURE FAILED"
 
           # Package
           mkdir -p /tmp/Payload
           cp -r "$APP" /tmp/Payload/
           cd /tmp
-          /usr/bin/zip -r WebDriverAgent.zip Payload/
-          mv WebDriverAgent.zip ~/WebDriverAgent.ipa
-          echo "Final size: $(du -sh ~/WebDriverAgent.ipa)"
+          /usr/bin/zip -r WebDriverAgent.ipa Payload/
+          cp WebDriverAgent.ipa ~/WebDriverAgent.ipa
+          echo "Size: $(du -sh ~/WebDriverAgent.ipa)"
     artifacts:
       - ~/WebDriverAgent.ipa
