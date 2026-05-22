@@ -23,18 +23,25 @@ workflows:
             PROVISIONING_PROFILE="" \
             DEVELOPMENT_TEAM="" \
             CODE_SIGNING_REQUIRED=NO
+      - name: Fix bundle ID
+        script: |
+          APP=$(find ./build -name "*.app" \
+            -not -path "*/PlugIns/*" | head -1)
+          PLIST="$APP/Info.plist"
+          plutil -convert xml1 "$PLIST"
+          plutil -replace CFBundleIdentifier \
+            -string "com.beanerflicker.wda" "$PLIST"
+          echo "New bundle ID: $(plutil -extract CFBundleIdentifier raw "$PLIST")"
       - name: Sign and Package
         script: |
           APP=$(find ./build -name "*.app" \
             -not -path "*/PlugIns/*" | head -1)
           echo "Found: $APP"
 
-          # Convert all plists to XML format so AltStore can read them
           find "$APP" -name "*.plist" | while read plist; do
             plutil -convert xml1 "$plist" 2>/dev/null || true
           done
 
-          # Ad-hoc sign every binary
           find "$APP" -type f | while read f; do
             if file "$f" | grep -q "Mach-O"; then
               codesign --force --sign - "$f" 2>/dev/null || true
@@ -42,7 +49,6 @@ workflows:
           done
           codesign --force --deep --sign - "$APP"
 
-          # Package
           mkdir -p /tmp/Payload
           cp -r "$APP" /tmp/Payload/
           cd /tmp
