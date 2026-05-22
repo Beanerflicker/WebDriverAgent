@@ -27,34 +27,14 @@ workflows:
             DEVELOPMENT_TEAM="" \
             CODE_SIGNING_REQUIRED=NO \
             EXCLUDED_ARCHS=x86_64
-      - name: Find all apps
-        script: |
-          echo "=== ALL APP BUNDLES ==="
-          find ./build -name "*.app" | sort
-          echo "=== ALL INFO.PLIST FILES ==="
-          find ./build -name "Info.plist" | sort
       - name: Package
         script: |
-          # Find the Runner app specifically - it has the main executable
-          APP=$(find ./build -name "WebDriverAgentRunner-Runner.app" \
-            -not -path "*.dSYM*" | head -1)
+          APP="./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
           
-          # If not found try any .app not in dSYM
-          if [ -z "$APP" ]; then
-            APP=$(find ./build -name "*.app" \
-              -not -path "*.dSYM*" \
-              -not -path "*.xctest*" | head -1)
-          fi
-
-          echo "Using app: $APP"
+          echo "App exists: $(test -d "$APP" && echo YES || echo NO)"
+          echo "Info.plist exists: $(test -f "$APP/Info.plist" && echo YES || echo NO)"
           echo "App contents:"
           ls -la "$APP"
-
-          # Verify Info.plist exists
-          if [ ! -f "$APP/Info.plist" ]; then
-            echo "ERROR: No Info.plist found"
-            exit 1
-          fi
 
           # Convert plists to XML
           find "$APP" -name "*.plist" | while read plist; do
@@ -66,7 +46,7 @@ workflows:
             "Set :CFBundleIdentifier com.beanerflicker.wda" \
             "$APP/Info.plist"
 
-          echo "Bundle ID set to: $(/usr/libexec/PlistBuddy -c \
+          echo "Bundle ID: $(/usr/libexec/PlistBuddy -c \
             "Print :CFBundleIdentifier" "$APP/Info.plist")"
 
           # Sign
@@ -83,8 +63,9 @@ workflows:
           cd /tmp
           /usr/bin/zip -r WebDriverAgent.ipa Payload/
           cp WebDriverAgent.ipa ~/WebDriverAgent.ipa
+          
           echo "Final size: $(du -sh ~/WebDriverAgent.ipa)"
-          echo "IPA contents:"
-          zipinfo ~/WebDriverAgent.ipa | head -20
+          echo "IPA structure:"
+          zipinfo ~/WebDriverAgent.ipa | grep "Info.plist"
     artifacts:
       - ~/WebDriverAgent.ipa
