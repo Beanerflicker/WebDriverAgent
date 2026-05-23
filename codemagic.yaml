@@ -9,6 +9,7 @@ workflows:
         bundle_identifier: com.beanerflicker.wda.34QXW692J2
       vars:
         BUNDLE_ID: "com.beanerflicker.wda.34QXW692J2"
+        TEAM_ID: "34QXW692J2"
         XCODE_PROJECT: "WebDriverAgent.xcodeproj"
         XCODE_SCHEME: "WebDriverAgentRunner"
     scripts:
@@ -19,26 +20,29 @@ workflows:
             -scheme "$XCODE_SCHEME"
       - name: Prepare Project and Signing
         script: |
-          # Force the project to use your specific Bundle ID
+          # 1. Force the project to use your specific Bundle ID and Team ID
           sed -i '' "s/PRODUCT_BUNDLE_IDENTIFIER = .*;/PRODUCT_BUNDLE_IDENTIFIER = $BUNDLE_ID;/g" "$XCODE_PROJECT/project.pbxproj"
+          sed -i '' "s/DEVELOPMENT_TEAM = .*;/DEVELOPMENT_TEAM = $TEAM_ID;/g" "$XCODE_PROJECT/project.pbxproj"
           
-          # Initialize the signing environment
+          # 2. Initialize the signing environment
           xcode-project use-profiles
       - name: Build and Package IPA
         script: |
           # 1. Clean old builds
           rm -rf build Payload WebDriverAgent.ipa
 
-          # 2. Build for testing (Required for WebDriverAgent)
+          # 2. Build for testing with explicit signing flags
           xcodebuild build-for-testing \
             -project "$XCODE_PROJECT" \
             -scheme "$XCODE_SCHEME" \
             -destination "generic/platform=iOS" \
             -configuration Debug \
-            -derivedDataPath ./build
+            -derivedDataPath ./build \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Apple Development"
 
           # 3. Find the actual Runner.app folder
-          # We use -type d to ensure we only grab the folder
           RUNNER_APP=$(find ./build/Build/Products -name "WebDriverAgentRunner-Runner.app" -type d | head -n 1)
           
           if [ -z "$RUNNER_APP" ]; then
@@ -46,11 +50,11 @@ workflows:
             exit 1
           fi
 
-          # 4. Construct the Payload folder correctly
+          # 4. Construct the Payload folder
           mkdir Payload
           cp -LR "$RUNNER_APP" Payload/
           
-          # 5. Zip it (the -r flag is critical)
+          # 5. Zip it into the IPA
           zip -r WebDriverAgent.ipa Payload
     artifacts:
       - "*.ipa"
