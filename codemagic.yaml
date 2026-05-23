@@ -6,15 +6,13 @@ workflows:
       xcode: 16.0
       ios_signing:
         provisioning_profiles:
-          - name: "WDA_Development"
-            target: "WebDriverAgentRunner"
-            bundle_identifier: "com.beanerflicker.wda.34QXW692J2"
+          - WDA_Development
         certificates:
-          - name: "Joshua Watts"
+          - Joshua Watts
       vars:
         BUNDLE_ID: "com.beanerflicker.wda.34QXW692J2"
         TEAM_ID: "34QXW692J2"
-        # This MUST match the Reference Name in Codemagic UI exactly
+        # This is the reference name of your profile in Codemagic
         PROFILE_REF: "WDA_Development" 
         XCODE_PROJECT: "WebDriverAgent.xcodeproj"
         XCODE_SCHEME: "WebDriverAgentRunner"
@@ -26,22 +24,22 @@ workflows:
             -scheme "$XCODE_SCHEME"
       - name: Prepare Project and Signing
         script: |
-          # 1. Force Bundle ID, Team ID, and Manual Signing
+          # 1. Patch the project file to use your Bundle ID and Team ID
           find . -type f -name "project.pbxproj" -exec sed -i '' "s/com.facebook.WebDriverAgentRunner/$BUNDLE_ID/g" {} +
           sed -i '' "s/DEVELOPMENT_TEAM = .*;/DEVELOPMENT_TEAM = $TEAM_ID;/g" "$XCODE_PROJECT/project.pbxproj"
           sed -i '' "s/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g" "$XCODE_PROJECT/project.pbxproj"
           
-          # 2. Force the project to use the Profile Reference Name from Codemagic
+          # 2. Map the Provisioning Profile into the project settings
           sed -i '' "s/PROVISIONING_PROFILE_SPECIFIER = .*;/PROVISIONING_PROFILE_SPECIFIER = \"$PROFILE_REF\";/g" "$XCODE_PROJECT/project.pbxproj"
 
-          # 3. Install the certificate and profile on the build machine
+          # 3. Initialize the signing environment
           xcode-project use-profiles
       - name: Build and Package IPA
         script: |
           rm -rf build Payload WebDriverAgent.ipa
 
-          # 4. Build the app
-          # We use PROFILE_REF here so Xcode looks for the file Codemagic just installed
+          # 4. Build the app 
+          # We use "Apple Development" as the generic pointer to your "Joshua Watts" cert
           xcodebuild build \
             -project "$XCODE_PROJECT" \
             -scheme "$XCODE_SCHEME" \
@@ -53,10 +51,15 @@ workflows:
             CODE_SIGN_IDENTITY="Apple Development" \
             PROVISIONING_PROFILE_SPECIFIER="$PROFILE_REF"
 
-          # 5. Locate and package the app
+          # 5. Locate the .app folder
           RUNNER_APP=$(find ./build/Build/Products -name "WebDriverAgentRunner-Runner.app" -type d | head -n 1)
-          if [ -z "$RUNNER_APP" ]; then echo "App not found"; exit 1; fi
           
+          if [ -z "$RUNNER_APP" ]; then
+            echo "FAILED: Could not find the .app folder!"
+            exit 1
+          fi
+
+          # 6. Construct the Payload folder and Zip
           mkdir Payload
           cp -LR "$RUNNER_APP" Payload/
           zip -ry WebDriverAgent.ipa Payload
