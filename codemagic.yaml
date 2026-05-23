@@ -3,13 +3,12 @@ workflows:
     name: Build WDA IPA (Signed)
     max_build_duration: 25
     environment:
-      xcode: 15.4 # Changed to a standard stable version, adjust if needed
+      xcode: 15.4
       ios_signing:
         provisioning_profiles:
-          - profile_name: WDA_Profile
-            bundle_identifier: com.beanerflicker.wda
+          - name: WDA_Profile  # This MUST match the 'Reference Name' in Codemagic UI
         certificates:
-          - certificate_name: Apple Development
+          - name: Apple Development # This MUST match the 'Reference Name' in Codemagic UI
       vars:
         BUNDLE_ID: "com.beanerflicker.wda"
     scripts:
@@ -20,7 +19,6 @@ workflows:
             -scheme WebDriverAgentRunner
       - name: Build
         script: |
-          # We now ALLOW code signing and use the profile you uploaded
           xcodebuild \
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner \
@@ -48,26 +46,24 @@ workflows:
           mkdir -p "$APP/Frameworks"
           cp "$LIB" "$APP/Frameworks/"
 
-          # 4. Patch Framework paths (keeping your original logic)
+          # 4. Patch Framework paths
           TESTING="$APP/Frameworks/Testing.framework/Testing"
           install_name_tool -change "@rpath/lib_TestingInterop.dylib" "@loader_path/../lib_TestingInterop.dylib" "$TESTING" 2>/dev/null || true
           
           XCTESTCORE="$APP/Frameworks/XCTestCore.framework/XCTestCore"
           install_name_tool -change "@rpath/Testing.framework/Testing" "@loader_path/../Testing.framework/Testing" "$XCTESTCORE" 2>/dev/null || true
 
-          # 5. Sign the app with YOUR real Apple Certificate
-          # Codemagic puts your certificate name in the CM_CERTIFICATE_NAME variable
+          # 5. Sign the app
+          # Codemagic provides the certificate identity in the CM_CERTIFICATE_NAME variable
           echo "Signing with certificate: $CM_CERTIFICATE_NAME"
           
-          # Sign internal binaries
           find "$APP" -type f | while read f; do
             if file "$f" | grep -q "Mach-O"; then
               codesign --force --sign "$CM_CERTIFICATE_NAME" "$f" 2>/dev/null || true
             fi
           done
 
-          # Final app sign with the provisioning profile
-          codesign --force --sign "$CM_CERTIFICATE_NAME" --common-name "$CM_CERTIFICATE_NAME" "$APP"
+          codesign --force --sign "$CM_CERTIFICATE_NAME" "$APP"
 
           # 6. Create IPA
           mkdir -p /tmp/Payload
