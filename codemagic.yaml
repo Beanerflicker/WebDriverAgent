@@ -19,25 +19,31 @@ workflows:
             -scheme "$XCODE_SCHEME"
       - name: Prepare Project and Signing
         script: |
-          # Force the project to use the full Bundle ID from your screenshot
+          # Force the project to use your specific Bundle ID
           sed -i '' "s/PRODUCT_BUNDLE_IDENTIFIER = .*;/PRODUCT_BUNDLE_IDENTIFIER = $BUNDLE_ID;/g" "$XCODE_PROJECT/project.pbxproj"
           
-          # This command maps your uploaded certs/profiles to the build machine
+          # Initialize the signing environment on the Mac
           xcode-project use-profiles
       - name: Build and Package IPA
         script: |
-          # Build the .app file using standard xcodebuild
+          # 1. Build the WebDriverAgentRunner app
           xcodebuild build-for-testing \
             -project "$XCODE_PROJECT" \
             -scheme "$XCODE_SCHEME" \
             -destination "generic/platform=iOS" \
             -configuration Debug \
             -derivedDataPath ./build
-          
-          # WebDriverAgent builds a .app, but we need an .ipa for your PC tool.
-          # We manually package it here:
+
+          # 2. Locate the .app folder (Fixes the APIInternalError)
+          APP_DIR=$(find ./build -name "WebDriverAgentRunner-Runner.app" | head -n 1)
+          echo "Found app at: $APP_DIR"
+
+          # 3. Create the correct folder structure for Apple installation
+          rm -rf Payload
           mkdir -p Payload
-          cp -r build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app Payload/
-          zip -r WebDriverAgent.ipa Payload
+          cp -R "$APP_DIR" Payload/
+          
+          # 4. Zip into a valid IPA file
+          zip -qr WebDriverAgent.ipa Payload
     artifacts:
       - "*.ipa"
