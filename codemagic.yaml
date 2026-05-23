@@ -5,12 +5,11 @@ workflows:
     environment:
       xcode: 16.0
       ios_signing:
+        bundle_identifier: com.beanerflicker.wda
         provisioning_profiles:
-          - name: "WDA_Development"
-            target: "WebDriverAgentRunner"  # This clears the "variable target" error
-            bundle_identifier: "com.beanerflicker.wda"
+          - name: WDA_Development
         certificates:
-          - name: "WDA_Profile"
+          - name: WDA_Profile
       vars:
         BUNDLE_ID: "com.beanerflicker.wda"
         TEAM_ID: "TK5BU69PB4"
@@ -35,7 +34,7 @@ workflows:
           # 3. Apply Profile Specifier directly to the project file
           sed -i '' "s/PROVISIONING_PROFILE_SPECIFIER = .*;/PROVISIONING_PROFILE_SPECIFIER = \"$PROFILE_NAME\";/g" "$XCODE_PROJECT/project.pbxproj"
 
-          # 4. Initialize the signing environment on the builder
+          # 4. Initialize the signing environment
           xcode-project use-profiles
       - name: Build and Package IPA
         script: |
@@ -43,7 +42,6 @@ workflows:
           rm -rf build Payload WebDriverAgent.ipa
 
           # 2. Build the app
-          # We rely on the project patches and use-profiles for signing
           xcodebuild build \
             -project "$XCODE_PROJECT" \
             -scheme "$XCODE_SCHEME" \
@@ -61,11 +59,11 @@ workflows:
             exit 1
           fi
 
-          # 4. Construct the Payload folder structure
+          # 4. Construct the Payload folder
           mkdir Payload
           cp -LR "$RUNNER_APP" Payload/
           
-          # 5. Zip into IPA (using -ry to preserve links)
+          # 5. Zip into IPA
           zip -ry WebDriverAgent.ipa Payload
     artifacts:
       - "*.ipa"
