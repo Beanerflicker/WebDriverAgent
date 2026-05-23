@@ -6,13 +6,14 @@ workflows:
       xcode: 16.0
       ios_signing:
         provisioning_profiles:
-          - name: "WDA_Development"     # Matches your Provisioning Profile name exactly
+          - name: "WDA_Development"
+            target: "WebDriverAgentRunner"  # This clears the "variable target" error
             bundle_identifier: "com.beanerflicker.wda"
         certificates:
-          - name: "WDA_Profile"         # Matches your Certificate Reference name exactly
+          - name: "WDA_Profile"
       vars:
         BUNDLE_ID: "com.beanerflicker.wda"
-        TEAM_ID: "TK5BU69PB4"           # Your Team ID from the logs
+        TEAM_ID: "TK5BU69PB4"
         PROFILE_NAME: "WDA_Development"
         XCODE_PROJECT: "WebDriverAgent.xcodeproj"
         XCODE_SCHEME: "WebDriverAgentRunner"
@@ -24,27 +25,25 @@ workflows:
             -scheme "$XCODE_SCHEME"
       - name: Prepare Project and Signing
         script: |
-          # 1. Global Patch: Replace default Facebook ID with yours in the project file
+          # 1. Global Patch: Replace default Facebook ID with yours
           find . -type f -name "project.pbxproj" -exec sed -i '' "s/com.facebook.WebDriverAgentRunner/$BUNDLE_ID/g" {} +
           
           # 2. Force Team ID and Manual Signing Style
           sed -i '' "s/DEVELOPMENT_TEAM = .*;/DEVELOPMENT_TEAM = $TEAM_ID;/g" "$XCODE_PROJECT/project.pbxproj"
           sed -i '' "s/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g" "$XCODE_PROJECT/project.pbxproj"
           
-          # 3. Apply Profile Specifier ONLY to the Runner target via the pbxproj
-          # This avoids the 'WebDriverAgentLib does not support provisioning profiles' error
+          # 3. Apply Profile Specifier directly to the project file
           sed -i '' "s/PROVISIONING_PROFILE_SPECIFIER = .*;/PROVISIONING_PROFILE_SPECIFIER = \"$PROFILE_NAME\";/g" "$XCODE_PROJECT/project.pbxproj"
 
-          # 4. Initialize the signing environment
+          # 4. Initialize the signing environment on the builder
           xcode-project use-profiles
       - name: Build and Package IPA
         script: |
-          # 1. Clean previous build artifacts
+          # 1. Clean previous artifacts
           rm -rf build Payload WebDriverAgent.ipa
 
           # 2. Build the app
-          # We do not pass PROVISIONING_PROFILE_SPECIFIER as a flag here; 
-          # it is handled by the pbxproj patch above to keep the Library build clean.
+          # We rely on the project patches and use-profiles for signing
           xcodebuild build \
             -project "$XCODE_PROJECT" \
             -scheme "$XCODE_SCHEME" \
@@ -66,7 +65,7 @@ workflows:
           mkdir Payload
           cp -LR "$RUNNER_APP" Payload/
           
-          # 5. Zip into IPA (using -ry to preserve symbolic links)
+          # 5. Zip into IPA (using -ry to preserve links)
           zip -ry WebDriverAgent.ipa Payload
     artifacts:
       - "*.ipa"
