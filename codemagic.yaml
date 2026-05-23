@@ -5,11 +5,13 @@ workflows:
     environment:
       xcode: 16.0
       ios_signing:
+        distribution_type: development
+        bundle_identifier: com.beanerflicker.wda
         provisioning_profiles:
-          - name: "WDA_Profile"
-            bundle_identifier: "com.beanerflicker.wda" # Added this to fix the validation error
+          - name: WDA_Profile
+            bundle_identifier: com.beanerflicker.wda
         certificates:
-          - name: "Apple Development"
+          - name: Apple Development
       vars:
         BUNDLE_ID: "com.beanerflicker.wda"
         XCODE_PROJECT: "WebDriverAgent.xcodeproj"
@@ -25,11 +27,11 @@ workflows:
           # Force the project to use your Bundle ID
           sed -i '' "s/PRODUCT_BUNDLE_IDENTIFIER = .*;/PRODUCT_BUNDLE_IDENTIFIER = $BUNDLE_ID;/g" "$XCODE_PROJECT/project.pbxproj"
           
-          # Map the provisioning profiles to the build environment
+          # This command initializes the keychain with your uploaded files
           xcode-project use-profiles
       - name: Build and Package IPA
         script: |
-          # Build the IPA without the invalid --bundle-id flag
+          # Build the IPA
           xcode-project build-ipa \
             --project "$XCODE_PROJECT" \
             --scheme "$XCODE_SCHEME" \
