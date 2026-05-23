@@ -4,10 +4,18 @@ workflows:
     max_build_duration: 25
     environment:
       xcode: 16.0
+      ios_signing:
+        provisioning_profiles:
+          - name: "WDA_Development"
+            target: "WebDriverAgentRunner"
+            bundle_identifier: "com.beanerflicker.wda.34QXW692J2"
+        certificates:
+          - name: "Joshua Watts"
       vars:
         BUNDLE_ID: "com.beanerflicker.wda.34QXW692J2"
         TEAM_ID: "34QXW692J2"
-        PROFILE_NAME: "WDA_Profile" 
+        # This MUST match the Reference Name in Codemagic UI exactly
+        PROFILE_REF: "WDA_Development" 
         XCODE_PROJECT: "WebDriverAgent.xcodeproj"
         XCODE_SCHEME: "WebDriverAgentRunner"
     scripts:
@@ -18,48 +26,39 @@ workflows:
             -scheme "$XCODE_SCHEME"
       - name: Prepare Project and Signing
         script: |
-          # 1. Global Patch: Replace default Facebook ID with yours
+          # 1. Force Bundle ID, Team ID, and Manual Signing
           find . -type f -name "project.pbxproj" -exec sed -i '' "s/com.facebook.WebDriverAgentRunner/$BUNDLE_ID/g" {} +
-          
-          # 2. Force Team ID and Manual Signing Style
           sed -i '' "s/DEVELOPMENT_TEAM = .*;/DEVELOPMENT_TEAM = $TEAM_ID;/g" "$XCODE_PROJECT/project.pbxproj"
           sed -i '' "s/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g" "$XCODE_PROJECT/project.pbxproj"
           
-          # 3. Apply the Profile Name directly to the project file
-          sed -i '' "s/PROVISIONING_PROFILE_SPECIFIER = .*;/PROVISIONING_PROFILE_SPECIFIER = \"$PROFILE_NAME\";/g" "$XCODE_PROJECT/project.pbxproj"
+          # 2. Force the project to use the Profile Reference Name from Codemagic
+          sed -i '' "s/PROVISIONING_PROFILE_SPECIFIER = .*;/PROVISIONING_PROFILE_SPECIFIER = \"$PROFILE_REF\";/g" "$XCODE_PROJECT/project.pbxproj"
 
-          # 4. Initialize the signing environment on the builder
+          # 3. Install the certificate and profile on the build machine
           xcode-project use-profiles
       - name: Build and Package IPA
         script: |
-          # 1. Clean previous build artifacts
           rm -rf build Payload WebDriverAgent.ipa
 
-          # 2. Build for testing (Required for WebDriverAgent)
-          xcodebuild build-for-testing \
+          # 4. Build the app
+          # We use PROFILE_REF here so Xcode looks for the file Codemagic just installed
+          xcodebuild build \
             -project "$XCODE_PROJECT" \
             -scheme "$XCODE_SCHEME" \
             -destination "generic/platform=iOS" \
             -configuration Debug \
             -derivedDataPath ./build \
-            CODE_SIGN_IDENTITY="Apple Development" \
-            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
             DEVELOPMENT_TEAM="$TEAM_ID" \
-            CODE_SIGN_STYLE=Manual
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Apple Development" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_REF"
 
-          # 3. Locate the .app folder inside the build results
+          # 5. Locate and package the app
           RUNNER_APP=$(find ./build/Build/Products -name "WebDriverAgentRunner-Runner.app" -type d | head -n 1)
+          if [ -z "$RUNNER_APP" ]; then echo "App not found"; exit 1; fi
           
-          if [ -z "$RUNNER_APP" ]; then
-            echo "FAILED: Could not find the .app folder!"
-            exit 1
-          fi
-
-          # 4. Construct the Payload folder structure correctly
           mkdir Payload
-          cp -RP "$RUNNER_APP" Payload/
-          
-          # 5. Zip into IPA (preserving symbolic links)
+          cp -LR "$RUNNER_APP" Payload/
           zip -ry WebDriverAgent.ipa Payload
     artifacts:
       - "*.ipa"
