@@ -1,14 +1,13 @@
 workflows:
   build-wda:
-    name: Build WDA IPA (Signed)
+    name: Build WDA IPA (Manual Sign)
     max_build_duration: 25
     environment:
       xcode: 16.0
-      ios_signing:
-        # Using this simple format usually bypasses the "Profile reference" validator error
-        distribution_type: development
-        bundle_identifier: com.beanerflicker.wda.34QXW692J2
       vars:
+        # EXACT names from your Codemagic Code Signing tab
+        CERT_NAME: "Joshua Watts"
+        PROV_NAME: "WDA_Profile"
         BUNDLE_ID: "com.beanerflicker.wda.34QXW692J2"
         TEAM_ID: "34QXW692J2"
         XCODE_PROJECT: "WebDriverAgent.xcodeproj"
@@ -19,44 +18,48 @@ workflows:
           xcodebuild -resolvePackageDependencies \
             -project "$XCODE_PROJECT" \
             -scheme "$XCODE_SCHEME"
-      - name: Prepare Project and Signing
+      - name: Manual Signing Setup
         script: |
-          # 1. Force the Bundle ID and Team ID into the project file
+          # 1. Force the project to use your specific Bundle ID and Team ID
           find . -type f -name "project.pbxproj" -exec sed -i '' "s/com.facebook.WebDriverAgentRunner/$BUNDLE_ID/g" {} +
           sed -i '' "s/DEVELOPMENT_TEAM = .*;/DEVELOPMENT_TEAM = $TEAM_ID;/g" "$XCODE_PROJECT/project.pbxproj"
           sed -i '' "s/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g" "$XCODE_PROJECT/project.pbxproj"
           
-          # 2. Install the certificate and profile selected in the UI
-          xcode-project use-profiles
-          
-          # 3. Extract the UUID of the profile (The most reliable way to sign)
-          PROV_UUID=$(grep -aA1 UUID "$CM_PROVISIONING_PROFILE" | grep -o "[-A-Z0-9]\{36\}")
-          echo "Using Profile UUID: $PROV_UUID"
-          echo "PROV_UUID=$PROV_UUID" >> $CM_ENV
+          # 2. Fetch the profiles from Codemagic storage by Name
+          # This replaces the 'ios_signing' block and bypasses the validator
+          xcode-project use-profiles --name "$PROV_NAME" --bundle-id "$BUNDLE_ID"
       - name: Build and Package IPA
         script: |
+          # 1. Clean previous build attempts
           rm -rf build Payload WebDriverAgent.ipa
-          
-          # 4. Build using the UUID instead of the Name
-          # This bypasses the "No profile matching name found" error
-          xcodebuild build \
+
+          # 2. Build for testing (Required for WDA)
+          # We use "Apple Development" as the generic identity pointer
+          xcodebuild build-for-testing \
             -project "$XCODE_PROJECT" \
             -scheme "$XCODE_SCHEME" \
             -destination "generic/platform=iOS" \
             -configuration Debug \
             -derivedDataPath ./build \
             CODE_SIGN_IDENTITY="Apple Development" \
-            PROVISIONING_PROFILE="$PROV_UUID" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROV_NAME" \
             DEVELOPMENT_TEAM="$TEAM_ID" \
-            CODE_SIGN_STYLE=Manual \
-            PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID"
+            CODE_SIGN_STYLE=Manual
 
-          # 5. Locate and package the app
-          RUNNER_APP=$(find ./build/Build/Products -name "*.app" -type d | head -n 1)
-          if [ -z "$RUNNER_APP" ]; then echo "App not found"; exit 1; fi
+          # 3. Locate the .app folder (Fixes the APIInternalError)
+          # We look specifically for the Runner app
+          RUNNER_APP=$(find ./build/Build/Products/Debug-iphoneos -name "WebDriverAgentRunner-Runner.app" -type d | head -n 1)
           
+          if [ -z "$RUNNER_APP" ]; then
+            echo "FAILED: Could not find the .app folder in build products"
+            exit 1
+          fi
+
+          # 4. Construct the Payload folder correctly for iOS
           mkdir Payload
-          cp -LR "$RUNNER_APP" Payload/
+          cp -RP "$RUNNER_APP" Payload/
+          
+          # 5. Zip into IPA (preserving symlinks is vital for WDA)
           zip -ry WebDriverAgent.ipa Payload
     artifacts:
       - "*.ipa"
