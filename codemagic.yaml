@@ -6,9 +6,9 @@ workflows:
       xcode: 15.4
       ios_signing:
         provisioning_profiles:
-          - WDA_Profile
+          - "WDA_Profile.mobileprovision"  # <--- Change this to match your "Reference name"
         certificates:
-          - Apple Development
+          - "Apple Development"           # <--- Change this to match your "Reference name"
       vars:
         BUNDLE_ID: "com.beanerflicker.wda"
         XCODE_PROJECT: "WebDriverAgent.xcodeproj"
