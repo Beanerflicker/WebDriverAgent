@@ -1,15 +1,16 @@
 workflows:
   build-wda:
-    name: Build WDA IPA (Manual Sign)
+    name: Build WDA IPA (Signed)
     max_build_duration: 25
     environment:
       xcode: 16.0
+      ios_signing:
+        distribution_type: development
+        bundle_identifier: com.beanerflicker.wda.34QXW692J2
       vars:
-        # EXACT names from your Codemagic Code Signing tab
-        CERT_NAME: "Joshua Watts"
-        PROV_NAME: "WDA_Profile"
         BUNDLE_ID: "com.beanerflicker.wda.34QXW692J2"
         TEAM_ID: "34QXW692J2"
+        PROFILE_NAME: "WDA_Profile" 
         XCODE_PROJECT: "WebDriverAgent.xcodeproj"
         XCODE_SCHEME: "WebDriverAgentRunner"
     scripts:
@@ -18,23 +19,22 @@ workflows:
           xcodebuild -resolvePackageDependencies \
             -project "$XCODE_PROJECT" \
             -scheme "$XCODE_SCHEME"
-      - name: Manual Signing Setup
+      - name: Prepare Project and Signing
         script: |
           # 1. Force the project to use your specific Bundle ID and Team ID
           find . -type f -name "project.pbxproj" -exec sed -i '' "s/com.facebook.WebDriverAgentRunner/$BUNDLE_ID/g" {} +
           sed -i '' "s/DEVELOPMENT_TEAM = .*;/DEVELOPMENT_TEAM = $TEAM_ID;/g" "$XCODE_PROJECT/project.pbxproj"
           sed -i '' "s/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g" "$XCODE_PROJECT/project.pbxproj"
-          
-          # 2. Fetch the profiles from Codemagic storage by Name
-          # This replaces the 'ios_signing' block and bypasses the validator
-          xcode-project use-profiles --name "$PROV_NAME" --bundle-id "$BUNDLE_ID"
+          sed -i '' "s/PROVISIONING_PROFILE_SPECIFIER = .*;/PROVISIONING_PROFILE_SPECIFIER = \"$PROFILE_NAME\";/g" "$XCODE_PROJECT/project.pbxproj"
+
+          # 2. Install the certificate and profile
+          xcode-project use-profiles
       - name: Build and Package IPA
         script: |
           # 1. Clean previous build attempts
           rm -rf build Payload WebDriverAgent.ipa
 
-          # 2. Build for testing (Required for WDA)
-          # We use "Apple Development" as the generic identity pointer
+          # 2. Build for testing (Essential for WDA)
           xcodebuild build-for-testing \
             -project "$XCODE_PROJECT" \
             -scheme "$XCODE_SCHEME" \
@@ -42,24 +42,23 @@ workflows:
             -configuration Debug \
             -derivedDataPath ./build \
             CODE_SIGN_IDENTITY="Apple Development" \
-            PROVISIONING_PROFILE_SPECIFIER="$PROV_NAME" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
             DEVELOPMENT_TEAM="$TEAM_ID" \
             CODE_SIGN_STYLE=Manual
 
-          # 3. Locate the .app folder (Fixes the APIInternalError)
-          # We look specifically for the Runner app
-          RUNNER_APP=$(find ./build/Build/Products/Debug-iphoneos -name "WebDriverAgentRunner-Runner.app" -type d | head -n 1)
+          # 3. Locate the .app folder inside the build products
+          RUNNER_APP=$(find ./build/Build/Products -name "WebDriverAgentRunner-Runner.app" -type d | head -n 1)
           
           if [ -z "$RUNNER_APP" ]; then
-            echo "FAILED: Could not find the .app folder in build products"
+            echo "FAILED: Could not find the .app folder!"
             exit 1
           fi
 
-          # 4. Construct the Payload folder correctly for iOS
+          # 4. Construct the Payload folder structure correctly
           mkdir Payload
           cp -RP "$RUNNER_APP" Payload/
           
-          # 5. Zip into IPA (preserving symlinks is vital for WDA)
+          # 5. Zip into IPA (preserving symbolic links)
           zip -ry WebDriverAgent.ipa Payload
     artifacts:
       - "*.ipa"
