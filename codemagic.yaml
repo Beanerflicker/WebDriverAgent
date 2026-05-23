@@ -7,6 +7,7 @@ workflows:
       ios_signing:
         provisioning_profiles:
           - name: "WDA_Profile"
+            bundle_identifier: "com.beanerflicker.wda" # Added this to fix the validation error
         certificates:
           - name: "Apple Development"
       vars:
@@ -21,14 +22,14 @@ workflows:
             -scheme "$XCODE_SCHEME"
       - name: Prepare Project and Signing
         script: |
-          # 1. Force the Project to use your Bundle ID
+          # Force the project to use your Bundle ID
           sed -i '' "s/PRODUCT_BUNDLE_IDENTIFIER = .*;/PRODUCT_BUNDLE_IDENTIFIER = $BUNDLE_ID;/g" "$XCODE_PROJECT/project.pbxproj"
           
-          # 2. Map the provisioning profiles to the project
+          # Map the provisioning profiles to the build environment
           xcode-project use-profiles
       - name: Build and Package IPA
         script: |
-          # Removed the invalid --bundle-id flag
+          # Build the IPA without the invalid --bundle-id flag
           xcode-project build-ipa \
             --project "$XCODE_PROJECT" \
             --scheme "$XCODE_SCHEME" \
