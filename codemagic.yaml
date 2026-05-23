@@ -5,15 +5,13 @@ workflows:
     environment:
       xcode: 16.0
       ios_signing:
-        distribution_type: development
-        bundle_identifier: com.beanerflicker.wda
         provisioning_profiles:
-          - name: WDA_Profile
-            bundle_identifier: com.beanerflicker.wda
+          - name: "WDA_Profile"
+            bundle_identifier: "com.beanerflicker.wda.34QXW692J2"
         certificates:
-          - name: Apple Development
+          - name: "Joshua Watts"  # Updated to match your Reference Name
       vars:
-        BUNDLE_ID: "com.beanerflicker.wda"
+        BUNDLE_ID: "com.beanerflicker.wda.34QXW692J2"
         XCODE_PROJECT: "WebDriverAgent.xcodeproj"
         XCODE_SCHEME: "WebDriverAgentRunner"
     scripts:
@@ -24,14 +22,13 @@ workflows:
             -scheme "$XCODE_SCHEME"
       - name: Prepare Project and Signing
         script: |
-          # Force the project to use your Bundle ID
+          # Force the project to use the full Bundle ID from your profile
           sed -i '' "s/PRODUCT_BUNDLE_IDENTIFIER = .*;/PRODUCT_BUNDLE_IDENTIFIER = $BUNDLE_ID;/g" "$XCODE_PROJECT/project.pbxproj"
           
-          # This command initializes the keychain with your uploaded files
+          # Initialize the signing environment
           xcode-project use-profiles
       - name: Build and Package IPA
         script: |
-          # Build the IPA
           xcode-project build-ipa \
             --project "$XCODE_PROJECT" \
             --scheme "$XCODE_SCHEME" \
