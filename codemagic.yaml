@@ -8,7 +8,6 @@ workflows:
         distribution_type: development
         bundle_identifier: com.beanerflicker.wda.34QXW692J2
       vars:
-        # We use the ID without any extra extensions
         BUNDLE_ID: "com.beanerflicker.wda.34QXW692J2"
         TEAM_ID: "34QXW692J2"
         PROFILE_NAME: "WDA_Profile" 
@@ -22,38 +21,36 @@ workflows:
             -scheme "$XCODE_SCHEME"
       - name: Prepare Project and Signing
         script: |
-          # 1. Deep Patch: Replace the default Facebook ID with your ID everywhere
-          # This prevents the .xctrunner mismatch
-          find . -type f -name "project.pbxproj" -exec sed -i '' "s/com.facebook.WebDriverAgentRunner/$BUNDLE_ID/g" {} +
-          
-          # 2. Force Team ID and Manual Signing Style
+          # 1. Global Patch: Replace the default Facebook ID and Team ID everywhere in the project file
+          # This prevents the '.xctrunner' suffix error
+          sed -i '' "s/com.facebook.WebDriverAgentRunner/$BUNDLE_ID/g" "$XCODE_PROJECT/project.pbxproj"
           sed -i '' "s/DEVELOPMENT_TEAM = .*;/DEVELOPMENT_TEAM = $TEAM_ID;/g" "$XCODE_PROJECT/project.pbxproj"
-          sed -i '' "s/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g" "$XCODE_PROJECT/project.pbxproj"
           
-          # 3. Force the project to use the specific Profile Name
+          # 2. Force Manual Signing and link the specific Profile Reference Name
+          sed -i '' "s/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g" "$XCODE_PROJECT/project.pbxproj"
           sed -i '' "s/PROVISIONING_PROFILE_SPECIFIER = .*;/PROVISIONING_PROFILE_SPECIFIER = \"$PROFILE_NAME\";/g" "$XCODE_PROJECT/project.pbxproj"
 
-          # 4. Initialize the signing environment
+          # 3. Initialize the signing environment on the build machine
           xcode-project use-profiles
       - name: Build and Package IPA
         script: |
-          # 1. Clean old builds
+          # 1. Clean old build artifacts
           rm -rf build Payload WebDriverAgent.ipa
 
-          # 2. Build the app directly (not build-for-testing) to avoid the .xctrunner suffix issue
-          # We use $CM_CERTIFICATE_NAME which Codemagic sets automatically
+          # 2. Build the app
+          # We use the build action (not build-for-testing) to keep the Bundle ID stable
           xcodebuild build \
             -project "$XCODE_PROJECT" \
             -scheme "$XCODE_SCHEME" \
             -destination "generic/platform=iOS" \
             -configuration Debug \
             -derivedDataPath ./build \
-            DEVELOPMENT_TEAM="$TEAM_ID" \
-            CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="$CM_CERTIFICATE_NAME" \
-            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME"
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            CODE_SIGN_STYLE=Manual
 
-          # 3. Find the actual .app folder
+          # 3. Locate the .app folder
           RUNNER_APP=$(find ./build/Build/Products -name "*.app" -type d | head -n 1)
           
           if [ -z "$RUNNER_APP" ]; then
@@ -61,11 +58,11 @@ workflows:
             exit 1
           fi
 
-          # 4. Construct the Payload folder
+          # 4. Construct the Payload folder (This structure is mandatory for iOS)
           mkdir Payload
           cp -LR "$RUNNER_APP" Payload/
           
-          # 5. Zip it into the IPA
-          zip -r WebDriverAgent.ipa Payload
+          # 5. Zip it (the -y flag preserves symlinks which are vital for iOS frameworks)
+          zip -ry WebDriverAgent.ipa Payload
     artifacts:
       - "*.ipa"
