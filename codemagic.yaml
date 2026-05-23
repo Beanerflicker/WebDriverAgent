@@ -22,14 +22,22 @@ workflows:
           # Force the project to use the full Bundle ID from your screenshot
           sed -i '' "s/PRODUCT_BUNDLE_IDENTIFIER = .*;/PRODUCT_BUNDLE_IDENTIFIER = $BUNDLE_ID;/g" "$XCODE_PROJECT/project.pbxproj"
           
-          # This command will automatically find your uploaded cert and profile 
-          # by matching the bundle_identifier we set above.
+          # This command maps your uploaded certs/profiles to the build machine
           xcode-project use-profiles
       - name: Build and Package IPA
         script: |
-          xcode-project build-ipa \
-            --project "$XCODE_PROJECT" \
-            --scheme "$XCODE_SCHEME" \
-            --configuration Debug
+          # Build the .app file using standard xcodebuild
+          xcodebuild build-for-testing \
+            -project "$XCODE_PROJECT" \
+            -scheme "$XCODE_SCHEME" \
+            -destination "generic/platform=iOS" \
+            -configuration Debug \
+            -derivedDataPath ./build
+          
+          # WebDriverAgent builds a .app, but we need an .ipa for your PC tool.
+          # We manually package it here:
+          mkdir -p Payload
+          cp -r build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app Payload/
+          zip -r WebDriverAgent.ipa Payload
     artifacts:
-      - build/ios/ipa/*.ipa
+      - "*.ipa"
