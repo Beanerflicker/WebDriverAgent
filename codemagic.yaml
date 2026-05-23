@@ -10,6 +10,8 @@ workflows:
       vars:
         BUNDLE_ID: "com.beanerflicker.wda.34QXW692J2"
         TEAM_ID: "34QXW692J2"
+        # This MUST match the Reference Name in Codemagic exactly
+        PROFILE_NAME: "WDA_Profile" 
         XCODE_PROJECT: "WebDriverAgent.xcodeproj"
         XCODE_SCHEME: "WebDriverAgentRunner"
     scripts:
@@ -20,18 +22,23 @@ workflows:
             -scheme "$XCODE_SCHEME"
       - name: Prepare Project and Signing
         script: |
-          # 1. Force the project to use your specific Bundle ID and Team ID
+          # 1. Force Bundle ID, Team ID, and Manual Signing Style
           sed -i '' "s/PRODUCT_BUNDLE_IDENTIFIER = .*;/PRODUCT_BUNDLE_IDENTIFIER = $BUNDLE_ID;/g" "$XCODE_PROJECT/project.pbxproj"
           sed -i '' "s/DEVELOPMENT_TEAM = .*;/DEVELOPMENT_TEAM = $TEAM_ID;/g" "$XCODE_PROJECT/project.pbxproj"
+          sed -i '' "s/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g" "$XCODE_PROJECT/project.pbxproj"
           
-          # 2. Initialize the signing environment
+          # 2. Force the project to use the specific Profile Name
+          sed -i '' "s/PROVISIONING_PROFILE_SPECIFIER = .*;/PROVISIONING_PROFILE_SPECIFIER = \"$PROFILE_NAME\";/g" "$XCODE_PROJECT/project.pbxproj"
+
+          # 3. Initialize the signing environment
           xcode-project use-profiles
       - name: Build and Package IPA
         script: |
           # 1. Clean old builds
           rm -rf build Payload WebDriverAgent.ipa
 
-          # 2. Build for testing with explicit signing flags
+          # 2. Build for testing with ALL explicit signing flags
+          # Note: We use "Joshua Watts" as the Identity because that's your cert name
           xcodebuild build-for-testing \
             -project "$XCODE_PROJECT" \
             -scheme "$XCODE_SCHEME" \
@@ -40,7 +47,8 @@ workflows:
             -derivedDataPath ./build \
             DEVELOPMENT_TEAM="$TEAM_ID" \
             CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="Apple Development"
+            CODE_SIGN_IDENTITY="Joshua Watts" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME"
 
           # 3. Find the actual Runner.app folder
           RUNNER_APP=$(find ./build/Build/Products -name "WebDriverAgentRunner-Runner.app" -type d | head -n 1)
