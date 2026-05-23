@@ -8,7 +8,7 @@ workflows:
         provisioning_profiles:
           - WDA_Development
         certificates:
-          - WDA_Profile.
+          - WDA_Profile
       vars:
         BUNDLE_ID: "com.beanerflicker.wda.34QXW692J2"
         TEAM_ID: "34QXW692J2"
