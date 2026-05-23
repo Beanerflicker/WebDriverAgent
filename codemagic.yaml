@@ -64,3 +64,16 @@ workflows:
             if file "$f" | grep -q "Mach-O"; then
               codesign --force --sign "$CM_CERTIFICATE_NAME" "$f" 2>/dev/null || true
             fi
+          done
+
+          # Final app sign with the provisioning profile
+          codesign --force --sign "$CM_CERTIFICATE_NAME" --common-name "$CM_CERTIFICATE_NAME" "$APP"
+
+          # 6. Create IPA
+          mkdir -p /tmp/Payload
+          cp -rp "$APP" /tmp/Payload/
+          cd /tmp
+          zip -r WebDriverAgent.ipa Payload/
+          cp WebDriverAgent.ipa ~/WebDriverAgent.ipa
+    artifacts:
+      - ~/WebDriverAgent.ipa
