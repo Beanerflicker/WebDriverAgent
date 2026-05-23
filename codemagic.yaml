@@ -9,7 +9,7 @@ workflows:
           - name: "WDA_Profile"
             bundle_identifier: "com.beanerflicker.wda.34QXW692J2"
         certificates:
-          - name: "Joshua Watts"  # Updated to match your Reference Name
+          - name: "Joshua Watts"
       vars:
         BUNDLE_ID: "com.beanerflicker.wda.34QXW692J2"
         XCODE_PROJECT: "WebDriverAgent.xcodeproj"
@@ -22,7 +22,7 @@ workflows:
             -scheme "$XCODE_SCHEME"
       - name: Prepare Project and Signing
         script: |
-          # Force the project to use the full Bundle ID from your profile
+          # Force the project to use the full Bundle ID from your screenshot
           sed -i '' "s/PRODUCT_BUNDLE_IDENTIFIER = .*;/PRODUCT_BUNDLE_IDENTIFIER = $BUNDLE_ID;/g" "$XCODE_PROJECT/project.pbxproj"
           
           # Initialize the signing environment
