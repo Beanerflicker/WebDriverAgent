@@ -1,56 +1,72 @@
 workflows:
   build-wda:
-    name: Build WDA IPA (Developer Signed)
+    name: Build WDA IPA (Signed)
     max_build_duration: 25
     environment:
-      xcode: 26.4
+      xcode: 16.0
       ios_signing:
-        distribution_type: development
-        bundle_identifier: com.beanerflicker.wda
+        provisioning_profiles:
+          - name: "WDA_Development"     # Matches your Provisioning Profile name exactly
+            bundle_identifier: "com.beanerflicker.wda"
+        certificates:
+          - name: "WDA_Profile"         # Matches your Certificate Reference name exactly
+      vars:
+        BUNDLE_ID: "com.beanerflicker.wda"
+        TEAM_ID: "TK5BU69PB4"           # Your Team ID from the logs
+        PROFILE_NAME: "WDA_Development"
+        XCODE_PROJECT: "WebDriverAgent.xcodeproj"
+        XCODE_SCHEME: "WebDriverAgentRunner"
     scripts:
       - name: Resolve packages
         script: |
           xcodebuild -resolvePackageDependencies \
-            -project WebDriverAgent.xcodeproj \
-            -scheme WebDriverAgentRunner
-
-      - name: Set Team ID
+            -project "$XCODE_PROJECT" \
+            -scheme "$XCODE_SCHEME"
+      - name: Prepare Project and Signing
         script: |
-          TEAM_ID=$(security find-identity -v -p codesigning \
-            | grep "iPhone Developer\|Apple Development" \
-            | head -1 \
-            | grep -o '([A-Z0-9]*)'  \
-            | tr -d '()')
-          echo "Team ID: $TEAM_ID"
-          echo "TEAM_ID=$TEAM_ID" >> $CM_ENV
+          # 1. Global Patch: Replace default Facebook ID with yours in the project file
+          find . -type f -name "project.pbxproj" -exec sed -i '' "s/com.facebook.WebDriverAgentRunner/$BUNDLE_ID/g" {} +
+          
+          # 2. Force Team ID and Manual Signing Style
+          sed -i '' "s/DEVELOPMENT_TEAM = .*;/DEVELOPMENT_TEAM = $TEAM_ID;/g" "$XCODE_PROJECT/project.pbxproj"
+          sed -i '' "s/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g" "$XCODE_PROJECT/project.pbxproj"
+          
+          # 3. Apply Profile Specifier ONLY to the Runner target via the pbxproj
+          # This avoids the 'WebDriverAgentLib does not support provisioning profiles' error
+          sed -i '' "s/PROVISIONING_PROFILE_SPECIFIER = .*;/PROVISIONING_PROFILE_SPECIFIER = \"$PROFILE_NAME\";/g" "$XCODE_PROJECT/project.pbxproj"
 
-      - name: Build and Sign
+          # 4. Initialize the signing environment
+          xcode-project use-profiles
+      - name: Build and Package IPA
         script: |
-          xcodebuild \
-            -project WebDriverAgent.xcodeproj \
-            -scheme WebDriverAgentRunner \
+          # 1. Clean previous build artifacts
+          rm -rf build Payload WebDriverAgent.ipa
+
+          # 2. Build the app
+          # We do not pass PROVISIONING_PROFILE_SPECIFIER as a flag here; 
+          # it is handled by the pbxproj patch above to keep the Library build clean.
+          xcodebuild build \
+            -project "$XCODE_PROJECT" \
+            -scheme "$XCODE_SCHEME" \
+            -destination "generic/platform=iOS" \
             -configuration Debug \
-            -sdk iphoneos \
-            -arch arm64 \
             -derivedDataPath ./build \
-            DEVELOPMENT_TEAM=$TEAM_ID \
-            PRODUCT_BUNDLE_IDENTIFIER=com.beanerflicker.wda \
             CODE_SIGN_STYLE=Manual \
-            PROVISIONING_PROFILE_SPECIFIER="WDA Development" \
-            CODE_SIGN_IDENTITY="Apple Development"
+            DEVELOPMENT_TEAM="$TEAM_ID"
 
-      - name: Export IPA
-        script: |
-          APP="./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
-          echo "App exists: $(test -d "$APP" && echo YES || echo NO)"
-          echo "Files: $(find "$APP" -type f | wc -l)"
+          # 3. Find the compiled .app folder
+          RUNNER_APP=$(find ./build/Build/Products -name "*.app" -type d | head -n 1)
+          
+          if [ -z "$RUNNER_APP" ]; then
+            echo "FAILED: Could not find the .app folder!"
+            exit 1
+          fi
 
-          mkdir -p /tmp/Payload
-          cp -rp "$APP" /tmp/Payload/
-          cd /tmp
-          /usr/bin/zip -r WebDriverAgent.ipa Payload/
-          cp WebDriverAgent.ipa ~/WebDriverAgent.ipa
-          echo "Size: $(du -sh ~/WebDriverAgent.ipa)"
-
+          # 4. Construct the Payload folder structure
+          mkdir Payload
+          cp -LR "$RUNNER_APP" Payload/
+          
+          # 5. Zip into IPA (using -ry to preserve symbolic links)
+          zip -ry WebDriverAgent.ipa Payload
     artifacts:
-      - ~/WebDriverAgent.ipa
+      - "*.ipa"
