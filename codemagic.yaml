@@ -6,7 +6,7 @@ workflows:
       xcode: 15.4
       ios_signing:
         provisioning_profiles:
-          - "WDA_Profile.mobileprovision"  # <--- Change this to match your "Reference name"
+          - "WDA_Profile"  # <--- Change this to match your "Reference name"
         certificates:
           - "Apple Development"           # <--- Change this to match your "Reference name"
       vars:
