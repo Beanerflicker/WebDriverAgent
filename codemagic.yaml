@@ -3,12 +3,12 @@ workflows:
     name: Build WDA IPA (Signed)
     max_build_duration: 25
     environment:
-      xcode: 16
+      xcode: 16.0
       ios_signing:
         provisioning_profiles:
-          - "WDA_Profile"  # <--- Change this to match your "Reference name"
+          - name: "WDA_Profile"
         certificates:
-          - "Apple Development"           # <--- Change this to match your "Reference name"
+          - name: "Apple Development"
       vars:
         BUNDLE_ID: "com.beanerflicker.wda"
         XCODE_PROJECT: "WebDriverAgent.xcodeproj"
@@ -19,17 +19,19 @@ workflows:
           xcodebuild -resolvePackageDependencies \
             -project "$XCODE_PROJECT" \
             -scheme "$XCODE_SCHEME"
-      - name: Set up code signing settings
+      - name: Prepare Project and Signing
         script: |
-          # This command injects the WDA_Profile and Apple Development certificate 
-          # directly into your project files so they sign correctly.
+          # 1. Force the Project to use your Bundle ID
+          sed -i '' "s/PRODUCT_BUNDLE_IDENTIFIER = .*;/PRODUCT_BUNDLE_IDENTIFIER = $BUNDLE_ID;/g" "$XCODE_PROJECT/project.pbxproj"
+          
+          # 2. Map the provisioning profiles to the project
           xcode-project use-profiles
       - name: Build and Package IPA
         script: |
-          # We use xcode-project build-ipa which is safer for manual signing
+          # Removed the invalid --bundle-id flag
           xcode-project build-ipa \
             --project "$XCODE_PROJECT" \
             --scheme "$XCODE_SCHEME" \
-            --bundle-id "$BUNDLE_ID"
+            --configuration Debug
     artifacts:
       - build/ios/ipa/*.ipa
