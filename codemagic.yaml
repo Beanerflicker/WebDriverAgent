@@ -1,9 +1,17 @@
 workflows:
   build-wda:
-    name: Build WDA IPA
+    name: Build WDA IPA (Signed)
     max_build_duration: 25
     environment:
-      xcode: 26.4
+      xcode: 15.4 # Changed to a standard stable version, adjust if needed
+      ios_signing:
+        provisioning_profiles:
+          - profile_name: WDA_Profile
+            bundle_identifier: com.beanerflicker.wda
+        certificates:
+          - certificate_name: Apple Development
+      vars:
+        BUNDLE_ID: "com.beanerflicker.wda"
     scripts:
       - name: Resolve packages
         script: |
@@ -12,6 +20,7 @@ workflows:
             -scheme WebDriverAgentRunner
       - name: Build
         script: |
+          # We now ALLOW code signing and use the profile you uploaded
           xcodebuild \
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner \
@@ -19,106 +28,39 @@ workflows:
             -sdk iphoneos \
             -arch arm64 \
             -derivedDataPath ./build \
-            ARCHS=arm64 \
-            ONLY_ACTIVE_ARCH=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGN_IDENTITY="" \
-            PROVISIONING_PROFILE="" \
-            DEVELOPMENT_TEAM="" \
-            CODE_SIGNING_REQUIRED=NO \
-            EXCLUDED_ARCHS=x86_64
-      - name: Package
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGNING_REQUIRED=YES \
+            clean build
+      - name: Package and Sign
         script: |
           APP="./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
 
-          # Convert all plists to XML
+          # 1. Convert plists
           find "$APP" -name "*.plist" | while read plist; do
             plutil -convert xml1 "$plist" 2>/dev/null || true
           done
 
-          # Set bundle ID
-          /usr/libexec/PlistBuddy -c \
-            "Set :CFBundleIdentifier com.beanerflicker.wda" \
-            "$APP/Info.plist"
-          echo "Bundle ID: $(/usr/libexec/PlistBuddy -c \
-            "Print :CFBundleIdentifier" "$APP/Info.plist")"
+          # 2. Fix Bundle ID
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" "$APP/Info.plist"
 
-          # Bundle lib_TestingInterop.dylib into Frameworks
+          # 3. Copy required Test Interop Library
           LIB="/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/lib/lib_TestingInterop.dylib"
-          echo "Copying lib_TestingInterop.dylib..."
+          mkdir -p "$APP/Frameworks"
           cp "$LIB" "$APP/Frameworks/"
-          echo "Done: $(ls -lh "$APP/Frameworks/lib_TestingInterop.dylib")"
 
-          # Patch Testing.framework to find lib_TestingInterop one level up
+          # 4. Patch Framework paths (keeping your original logic)
           TESTING="$APP/Frameworks/Testing.framework/Testing"
-          echo "Testing.framework deps before patch:"
-          otool -L "$TESTING" | grep -i interop
-
-          install_name_tool -change \
-            "@rpath/lib_TestingInterop.dylib" \
-            "@loader_path/../lib_TestingInterop.dylib" \
-            "$TESTING" 2>/dev/null || true
-
-          install_name_tool -change \
-            "/usr/lib/swift/lib_TestingInterop.dylib" \
-            "@loader_path/../lib_TestingInterop.dylib" \
-            "$TESTING" 2>/dev/null || true
-
-          echo "Testing.framework deps after patch:"
-          otool -L "$TESTING" | grep -i interop
-
-          # Patch XCTestCore to find Testing.framework via @loader_path
+          install_name_tool -change "@rpath/lib_TestingInterop.dylib" "@loader_path/../lib_TestingInterop.dylib" "$TESTING" 2>/dev/null || true
+          
           XCTESTCORE="$APP/Frameworks/XCTestCore.framework/XCTestCore"
-          install_name_tool -change \
-            "@rpath/Testing.framework/Testing" \
-            "@loader_path/../Testing.framework/Testing" \
-            "$XCTESTCORE" 2>/dev/null || true
+          install_name_tool -change "@rpath/Testing.framework/Testing" "@loader_path/../Testing.framework/Testing" "$XCTESTCORE" 2>/dev/null || true
 
-          install_name_tool -change \
-            "/usr/lib/swift/Testing.framework/Testing" \
-            "@loader_path/../Testing.framework/Testing" \
-            "$XCTESTCORE" 2>/dev/null || true
-
-          echo "Frameworks folder:"
-          ls "$APP/Frameworks/"
-
-          # Write entitlements
-          cat > /tmp/entitlements.plist << 'EOF'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-            "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>get-task-allow</key>
-              <true/>
-              <key>application-identifier</key>
-              <string>com.beanerflicker.wda</string>
-              <key>keychain-access-groups</key>
-              <array>
-                  <string>com.beanerflicker.wda</string>
-              </array>
-          </dict>
-          </plist>
-          EOF
-
-          # Sign everything including new dylib
+          # 5. Sign the app with YOUR real Apple Certificate
+          # Codemagic puts your certificate name in the CM_CERTIFICATE_NAME variable
+          echo "Signing with certificate: $CM_CERTIFICATE_NAME"
+          
+          # Sign internal binaries
           find "$APP" -type f | while read f; do
             if file "$f" | grep -q "Mach-O"; then
-              codesign --force --sign - \
-                --entitlements /tmp/entitlements.plist \
-                "$f" 2>/dev/null || true
+              codesign --force --sign "$CM_CERTIFICATE_NAME" "$f" 2>/dev/null || true
             fi
-          done
-          codesign --force --deep --sign - \
-            --entitlements /tmp/entitlements.plist \
-            "$APP"
-
-          # Package
-          mkdir -p /tmp/Payload
-          cp -rp "$APP" /tmp/Payload/
-          cd /tmp
-          /usr/bin/zip -r WebDriverAgent.ipa Payload/
-          cp WebDriverAgent.ipa ~/WebDriverAgent.ipa
-          echo "Final size: $(du -sh ~/WebDriverAgent.ipa)"
-    artifacts:
-      - ~/WebDriverAgent.ipa
