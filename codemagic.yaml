@@ -6,70 +6,30 @@ workflows:
       xcode: 15.4
       ios_signing:
         provisioning_profiles:
-          - name: WDA_Profile  # This MUST match the 'Reference Name' in Codemagic UI
+          - WDA_Profile
         certificates:
-          - name: Apple Development # This MUST match the 'Reference Name' in Codemagic UI
+          - Apple Development
       vars:
         BUNDLE_ID: "com.beanerflicker.wda"
+        XCODE_PROJECT: "WebDriverAgent.xcodeproj"
+        XCODE_SCHEME: "WebDriverAgentRunner"
     scripts:
       - name: Resolve packages
         script: |
           xcodebuild -resolvePackageDependencies \
-            -project WebDriverAgent.xcodeproj \
-            -scheme WebDriverAgentRunner
-      - name: Build
+            -project "$XCODE_PROJECT" \
+            -scheme "$XCODE_SCHEME"
+      - name: Set up code signing settings
         script: |
-          xcodebuild \
-            -project WebDriverAgent.xcodeproj \
-            -scheme WebDriverAgentRunner \
-            -configuration Debug \
-            -sdk iphoneos \
-            -arch arm64 \
-            -derivedDataPath ./build \
-            CODE_SIGNING_ALLOWED=YES \
-            CODE_SIGNING_REQUIRED=YES \
-            clean build
-      - name: Package and Sign
+          # This command injects the WDA_Profile and Apple Development certificate 
+          # directly into your project files so they sign correctly.
+          xcode-project use-profiles
+      - name: Build and Package IPA
         script: |
-          APP="./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
-
-          # 1. Convert plists
-          find "$APP" -name "*.plist" | while read plist; do
-            plutil -convert xml1 "$plist" 2>/dev/null || true
-          done
-
-          # 2. Fix Bundle ID
-          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" "$APP/Info.plist"
-
-          # 3. Copy required Test Interop Library
-          LIB="/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/lib/lib_TestingInterop.dylib"
-          mkdir -p "$APP/Frameworks"
-          cp "$LIB" "$APP/Frameworks/"
-
-          # 4. Patch Framework paths
-          TESTING="$APP/Frameworks/Testing.framework/Testing"
-          install_name_tool -change "@rpath/lib_TestingInterop.dylib" "@loader_path/../lib_TestingInterop.dylib" "$TESTING" 2>/dev/null || true
-          
-          XCTESTCORE="$APP/Frameworks/XCTestCore.framework/XCTestCore"
-          install_name_tool -change "@rpath/Testing.framework/Testing" "@loader_path/../Testing.framework/Testing" "$XCTESTCORE" 2>/dev/null || true
-
-          # 5. Sign the app
-          # Codemagic provides the certificate identity in the CM_CERTIFICATE_NAME variable
-          echo "Signing with certificate: $CM_CERTIFICATE_NAME"
-          
-          find "$APP" -type f | while read f; do
-            if file "$f" | grep -q "Mach-O"; then
-              codesign --force --sign "$CM_CERTIFICATE_NAME" "$f" 2>/dev/null || true
-            fi
-          done
-
-          codesign --force --sign "$CM_CERTIFICATE_NAME" "$APP"
-
-          # 6. Create IPA
-          mkdir -p /tmp/Payload
-          cp -rp "$APP" /tmp/Payload/
-          cd /tmp
-          zip -r WebDriverAgent.ipa Payload/
-          cp WebDriverAgent.ipa ~/WebDriverAgent.ipa
+          # We use xcode-project build-ipa which is safer for manual signing
+          xcode-project build-ipa \
+            --project "$XCODE_PROJECT" \
+            --scheme "$XCODE_SCHEME" \
+            --bundle-id "$BUNDLE_ID"
     artifacts:
-      - ~/WebDriverAgent.ipa
+      - build/ios/ipa/*.ipa
