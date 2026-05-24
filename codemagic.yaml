@@ -88,22 +88,27 @@ workflows:
           print('Entitlements written')
           "
 
-          # Sign dylibs WITHOUT entitlements
-          find "$APP/Frameworks" -name "*.dylib" | while read f; do
+          # Sign all dylibs everywhere WITHOUT entitlements
+          find "$APP" -name "*.dylib" | while read f; do
             codesign --force --sign "$CERT" "$f" 2>/dev/null || true
           done
 
-          # Sign frameworks WITHOUT entitlements
+          # Sign frameworks in main Frameworks folder WITHOUT entitlements
           find "$APP/Frameworks" -maxdepth 1 -name "*.framework" | while read f; do
             codesign --force --sign "$CERT" "$f" 2>/dev/null || true
           done
 
-          # Sign xctest plugin WITHOUT entitlements
-          find "$APP/PlugIns" -name "*.xctest" | while read f; do
+          # Sign frameworks inside xctest plugins WITHOUT entitlements
+          find "$APP/PlugIns" -name "*.framework" | while read f; do
             codesign --force --sign "$CERT" "$f" 2>/dev/null || true
           done
 
-          # Sign main app WITH entitlements only
+          # Sign xctest bundles WITHOUT entitlements
+          find "$APP/PlugIns" -maxdepth 1 -name "*.xctest" | while read f; do
+            codesign --force --sign "$CERT" "$f" 2>/dev/null || true
+          done
+
+          # Sign main app WITH entitlements
           codesign --force --sign "$CERT" \
             --entitlements /tmp/entitlements.plist \
             "$APP"
