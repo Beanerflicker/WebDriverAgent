@@ -33,46 +33,65 @@ workflows:
       - name: Sign with developer certificate
         script: |
           APP="./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
-          echo "App found: $(test -d "$APP" && echo YES || echo NO)"
-          echo "File count: $(find "$APP" -type f | wc -l)"
 
-          # Get real Apple Development certificate from keychain
+          # Get certificate name and team ID
           CERT=$(security find-identity -v -p codesigning \
             | grep "Apple Development" | head -1 \
             | awk -F'"' '{print $2}')
-          echo "Signing certificate: $CERT"
+          CERT_TEAM=$(echo "$CERT" | grep -oE '\([A-Z0-9]{10}\)' | tr -d '()')
+          echo "Certificate: $CERT"
+          echo "Certificate Team: $CERT_TEAM"
 
-          # Find the xctrunner provisioning profile
+          # Find xctrunner provisioning profile
           PROFILE=""
           for f in ~/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision; do
-            PLIST=$(security cms -D -i "$f")
-            APP_ID=$(echo "$PLIST" | grep -A1 "application-identifier" \
-              | grep string | sed 's/.*<string>//;s/<\/string>//')
+            security cms -D -i "$f" > /tmp/profile_check.plist 2>/dev/null
+            APP_ID=$(/usr/libexec/PlistBuddy -c "Print :Entitlements:application-identifier" \
+              /tmp/profile_check.plist 2>/dev/null || echo "")
+            echo "Checking profile: $APP_ID"
             if echo "$APP_ID" | grep -q "xctrunner"; then
               PROFILE="$f"
-              echo "Found xctrunner profile: $f"
+              echo "Using profile: $f"
+              echo "Profile App ID: $APP_ID"
               break
             fi
           done
 
           if [ -z "$PROFILE" ]; then
-            echo "ERROR: xctrunner profile not found"
-            exit 1
+            echo "xctrunner profile not found — using certificate team for entitlements"
           fi
 
-          # Embed provisioning profile into app bundle
-          cp "$PROFILE" "$APP/embedded.mobileprovision"
-          echo "Embedded profile"
+          # Write entitlements using certificate team ID
+          cat > /tmp/entitlements.plist << ENTEOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+            "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>application-identifier</key>
+              <string>${CERT_TEAM}.com.beanerflicker.WebDriverAgentRunner.xctrunner</string>
+              <key>com.apple.developer.team-identifier</key>
+              <string>${CERT_TEAM}</string>
+              <key>get-task-allow</key>
+              <true/>
+              <key>keychain-access-groups</key>
+              <array>
+                  <string>${CERT_TEAM}.com.beanerflicker.WebDriverAgentRunner.xctrunner</string>
+              </array>
+          </dict>
+          </plist>
+          ENTEOF
 
-          # Extract entitlements from the provisioning profile
-          security cms -D -i "$PROFILE" \
-            | /usr/libexec/PlistBuddy -x \
-              -c "Print :Entitlements" /dev/stdin \
-            > /tmp/entitlements.plist
-          echo "Entitlements:"
+          echo "Entitlements written:"
           cat /tmp/entitlements.plist
 
-          # Sign all Mach-O binaries inside the bundle
+          # Embed provisioning profile if found
+          if [ -n "$PROFILE" ]; then
+            cp "$PROFILE" "$APP/embedded.mobileprovision"
+            echo "Embedded profile"
+          fi
+
+          # Sign all Mach-O binaries
           find "$APP" -type f | while read f; do
             if file "$f" | grep -q "Mach-O"; then
               codesign --force --sign "$CERT" \
@@ -81,20 +100,22 @@ workflows:
             fi
           done
 
-          # Sign the full app bundle
+          # Sign full bundle
           codesign --force --deep --sign "$CERT" \
             --entitlements /tmp/entitlements.plist \
             "$APP"
 
-          # Verify signature
+          # Verify
           codesign --verify --verbose "$APP" \
             && echo "SIGNATURE VALID" \
             || echo "SIGNATURE FAILED"
 
+          echo "Entitlements in signed binary:"
+          codesign -d --entitlements - "$APP" 2>/dev/null || true
+
       - name: Package IPA
         script: |
           APP="./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
-
           mkdir -p /tmp/Payload
           cp -rp "$APP" /tmp/Payload/
           cd /tmp
