@@ -50,7 +50,7 @@ workflows:
           echo "Frameworks:"
           ls "$APP/Frameworks/"
 
-     - name: Diagnose library
+      - name: Diagnose library
         script: |
           LIB="/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/lib/lib_TestingInterop.dylib"
           echo "=== lib_TestingInterop architecture ==="
@@ -62,6 +62,10 @@ workflows:
           otool -L "$APP/WebDriverAgentRunner-Runner"
           echo "=== Testing.framework dependencies ==="
           otool -L "$APP/Frameworks/Testing.framework/Testing"
+          echo "=== XCTestCore dependencies ==="
+          otool -L "$APP/Frameworks/XCTestCore.framework/XCTestCore"
+          echo "=== libXCTestSwiftSupport dependencies ==="
+          otool -L "$APP/Frameworks/libXCTestSwiftSupport.dylib" 2>/dev/null || echo "not found"
 
       - name: Sign with developer certificate
         script: |
