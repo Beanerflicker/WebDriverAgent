@@ -42,11 +42,40 @@ workflows:
           fi
           echo "App bundle found"
 
-          LIB_SRC=$(find /Applications/Xcode.app -name "lib_TestingInterop.dylib" 2>/dev/null | head -1)
+          # Show Xcode environment so we know exactly what paths exist
+          echo "=== Xcode environment ==="
+          echo "xcode-select path: $(xcode-select -p)"
+          echo "Xcode version: $(xcodebuild -version | head -1)"
+          XCODE_DEV=$(xcode-select -p)
+          XCODE_APP=$(echo "$XCODE_DEV" | sed 's|/Contents/Developer||')
+          echo "Xcode.app path: $XCODE_APP"
+
+          # Search using xcode-select path — works regardless of versioned app name
+          LIB_SRC=$(find "$XCODE_DEV/Platforms/iPhoneOS.platform/Developer/usr/lib" \
+            -name "lib_TestingInterop.dylib" 2>/dev/null | head -1)
+
+          # Broader fallback search under the whole Xcode developer tree
           if [ -z "$LIB_SRC" ]; then
-            echo "ERROR: lib_TestingInterop.dylib not found in Xcode.app"
+            echo "Standard path failed, running broader search..."
+            LIB_SRC=$(find "$XCODE_DEV" -name "lib_TestingInterop.dylib" 2>/dev/null | head -1)
+          fi
+
+          # Last resort: search all of /Applications
+          if [ -z "$LIB_SRC" ]; then
+            echo "Developer tree search failed, searching /Applications..."
+            LIB_SRC=$(find /Applications -name "lib_TestingInterop.dylib" 2>/dev/null | head -1)
+          fi
+
+          if [ -z "$LIB_SRC" ]; then
+            echo "ERROR: lib_TestingInterop.dylib not found anywhere"
+            echo "Listing iPhoneOS platform lib dir:"
+            ls "$XCODE_DEV/Platforms/iPhoneOS.platform/Developer/usr/lib/" 2>/dev/null || echo "(dir not found)"
+            echo "Listing all dylibs in platform:"
+            find "$XCODE_DEV/Platforms/iPhoneOS.platform" -name "*.dylib" 2>/dev/null | head -20 || true
             exit 1
           fi
+
+          echo "Found lib_TestingInterop.dylib at: $LIB_SRC"
           cp "$LIB_SRC" "$APP/Frameworks/"
           echo "Copied lib_TestingInterop.dylib"
 
