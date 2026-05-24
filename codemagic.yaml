@@ -46,6 +46,20 @@ workflows:
             "@loader_path/../lib_TestingInterop.dylib" \
             "$TESTING" 2>/dev/null || true
 
+            # Patch libXCTestSwiftSupport to weak-link _Testing_Foundation
+          SWIFT_SUPPORT="$APP/Frameworks/libXCTestSwiftSupport.dylib"
+          echo "Patching libXCTestSwiftSupport..."
+          
+          # Change _Testing_Foundation from required to weak by removing it
+          # and replacing with a path that won't crash if missing
+          install_name_tool -change \
+            "@rpath/_Testing_Foundation.framework/_Testing_Foundation" \
+            "/usr/lib/swift/_Testing_Foundation.framework/_Testing_Foundation" \
+            "$SWIFT_SUPPORT" 2>/dev/null || true
+
+          echo "libXCTestSwiftSupport deps after patch:"
+          otool -L "$SWIFT_SUPPORT" | grep -i "testing_foundation"
+
           # Find and bundle _Testing_Foundation.framework
           echo "=== Searching for _Testing_Foundation.framework ==="
           find /Applications/Xcode.app -name "_Testing_Foundation.framework" 2>/dev/null | head -5
