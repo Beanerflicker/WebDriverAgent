@@ -1,49 +1,55 @@
 workflows:
   build-wda:
-    name: Build WDA IPA (Signed)
+    name: Build WDA IPA Developer Signed
     max_build_duration: 25
     environment:
-      xcode: 16.0
+      xcode: 26.4
       ios_signing:
-        provisioning_profiles:
-          - name: "WDA_Development"           # Codemagic Ref Name (to download the file)
-            bundle_identifier: "com.beanerflicker.wda.34QXW692J2"
-        certificates:
-          - name: "WDA_Profile"               # Codemagic Ref Name (to download the cert)
-      vars:
-        BUNDLE_ID: "com.beanerflicker.wda.34QXW692J2"
-        TEAM_ID: "34QXW692J2"
-        # This MUST match the 'Name' you typed on the Apple Portal
-        APPLE_PORTAL_NAME: "WDA_Profile"
-        XCODE_PROJECT: "WebDriverAgent.xcodeproj"
-        XCODE_SCHEME: "WebDriverAgentRunner"
+        distribution_type: development
+        bundle_identifier: com.beanerflicker.wda
     scripts:
       - name: Resolve packages
         script: |
           xcodebuild -resolvePackageDependencies \
-            -project "$XCODE_PROJECT" \
-            -scheme "$XCODE_SCHEME"
-      - name: Prepare Project and Signing
-        script: |
-          # 1. Patch the project file with your Bundle ID and Team ID
-          find . -type f -name "project.pbxproj" -exec sed -i '' "s/com.facebook.WebDriverAgentRunner/$BUNDLE_ID/g" {} +
-          sed -i '' "s/DEVELOPMENT_TEAM = .*;/DEVELOPMENT_TEAM = $TEAM_ID;/g" "$XCODE_PROJECT/project.pbxproj"
-          sed -i '' "s/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g" "$XCODE_PROJECT/project.pbxproj"
-          
-          # 2. Set the Provisioning Profile name in the project settings
-          sed -i '' "s/PROVISIONING_PROFILE_SPECIFIER = .*;/PROVISIONING_PROFILE_SPECIFIER = \"$APPLE_PORTAL_NAME\";/g" "$XCODE_PROJECT/project.pbxproj"
+            -project WebDriverAgent.xcodeproj \
+            -scheme WebDriverAgentRunner
 
-          # 3. Install the certificate and profile to the build machine keychain
-          xcode-project use-profiles
-      - name: Build and Package IPA
+      - name: Get Team ID
         script: |
-          rm -rf build Payload WebDriverAgent.ipa
+          TEAM_ID=$(security find-identity -v -p codesigning \
+            | grep -o '([A-Z0-9]\{10\})' \
+            | head -1 \
+            | tr -d '()')
+          echo "Team ID found: $TEAM_ID"
+          echo "TEAM_ID=$TEAM_ID" >> $CM_ENV
 
-          # 4. Build the app
-          # We use APPLE_PORTAL_NAME here so Xcode finds the internal name
-          xcodebuild build \
-            -project "$XCODE_PROJECT" \
-            -scheme "$XCODE_SCHEME" \
-            -destination "generic/platform=iOS" \
+      - name: Build and Sign
+        script: |
+          xcodebuild \
+            -project WebDriverAgent.xcodeproj \
+            -scheme WebDriverAgentRunner \
             -configuration Debug \
+            -sdk iphoneos \
+            -arch arm64 \
             -derivedDataPath ./build \
+            DEVELOPMENT_TEAM=$TEAM_ID \
+            PRODUCT_BUNDLE_IDENTIFIER=com.beanerflicker.wda \
+            CODE_SIGN_STYLE=Manual \
+            PROVISIONING_PROFILE_SPECIFIER="WDA Development" \
+            CODE_SIGN_IDENTITY="Apple Development"
+
+      - name: Package IPA
+        script: |
+          APP="./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
+          echo "App found: $(test -d "$APP" && echo YES || echo NO)"
+          echo "File count: $(find "$APP" -type f | wc -l)"
+
+          mkdir -p /tmp/Payload
+          cp -rp "$APP" /tmp/Payload/
+          cd /tmp
+          /usr/bin/zip -r WebDriverAgent.ipa Payload/
+          cp WebDriverAgent.ipa ~/WebDriverAgent.ipa
+          echo "Final size: $(du -sh ~/WebDriverAgent.ipa)"
+
+    artifacts:
+      - ~/WebDriverAgent.ipa
