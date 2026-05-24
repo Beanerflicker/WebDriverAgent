@@ -30,15 +30,84 @@ workflows:
             CODE_SIGNING_REQUIRED=NO \
             PRODUCT_BUNDLE_IDENTIFIER=com.beanerflicker.WebDriverAgentRunner
 
-      Invalid yaml configuration:
-While scanning a simple key
-  in "<byte string>", line 52, column 1:
-    import struct, sys
-    ^
-could not find expected ':'
-  in "<byte string>", line 54, column 1:
-    def patch_weak(filepath, substring):
-    ^
+      - name: Bundle and patch libraries
+        script: |
+          APP="./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
+
+          # Bundle lib_TestingInterop.dylib
+          LIB="/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/lib/lib_TestingInterop.dylib"
+          cp "$LIB" "$APP/Frameworks/"
+          echo "Copied lib_TestingInterop.dylib"
+
+          # Patch Testing.framework to find lib_TestingInterop
+          TESTING="$APP/Frameworks/Testing.framework/Testing"
+          install_name_tool -change \
+            "@rpath/lib_TestingInterop.dylib" \
+            "@loader_path/../lib_TestingInterop.dylib" \
+            "$TESTING" 2>/dev/null || true
+          echo "Patched Testing.framework"
+
+          # Write Python patcher to file first then execute
+          python3 -c "
+script = '''
+import struct, sys
+
+def patch_weak(filepath, substring):
+    with open(filepath, \"rb\") as f:
+        data = bytearray(f.read())
+    LC_LOAD_DYLIB = 0x0000000C
+    LC_LOAD_WEAK_DYLIB = 0x80000018
+    FAT_MAGIC = 0xCAFEBABE
+    magic = struct.unpack_from(\">I\", data, 0)[0]
+    offsets = []
+    if magic == FAT_MAGIC:
+        nfat = struct.unpack_from(\">I\", data, 4)[0]
+        for i in range(nfat):
+            offsets.append(struct.unpack_from(\">I\", data, 8 + i*20)[0])
+    else:
+        offsets = [0]
+    patched = False
+    for base in offsets:
+        mh = struct.unpack_from(\"<I\", data, base)[0]
+        if mh not in (0xFEEDFACF, 0xCFFAEDFE):
+            continue
+        ncmds = struct.unpack_from(\"<I\", data, base + 16)[0]
+        pos = base + 32
+        for _ in range(ncmds):
+            cmd = struct.unpack_from(\"<I\", data, pos)[0]
+            csz = struct.unpack_from(\"<I\", data, pos + 4)[0]
+            if cmd == LC_LOAD_DYLIB:
+                noff = struct.unpack_from(\"<I\", data, pos + 8)[0]
+                np = pos + noff
+                ne = np
+                while ne < pos + csz and data[ne]:
+                    ne += 1
+                name = data[np:ne].decode(\"utf-8\", errors=\"replace\")
+                if substring in name:
+                    print(f\"Patching: {name} -> LC_LOAD_WEAK_DYLIB\")
+                    struct.pack_into(\"<I\", data, pos, LC_LOAD_WEAK_DYLIB)
+                    patched = True
+            pos += csz
+    if patched:
+        with open(filepath, \"wb\") as f:
+            f.write(data)
+        print(f\"Saved: {filepath}\")
+    else:
+        print(f\"Not found: {substring}\")
+
+patch_weak(sys.argv[1], sys.argv[2])
+'''
+with open('/tmp/patch_weak.py', 'w') as f:
+    f.write(script)
+"
+
+          SWIFT_SUPPORT="$APP/Frameworks/libXCTestSwiftSupport.dylib"
+          echo "Patching _Testing_Foundation to weak..."
+          python3 /tmp/patch_weak.py "$SWIFT_SUPPORT" "_Testing_Foundation"
+
+          echo "Frameworks:"
+          ls "$APP/Frameworks/"
+
       - name: Sign with developer certificate
         script: |
           APP="./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
