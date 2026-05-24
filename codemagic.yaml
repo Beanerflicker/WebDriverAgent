@@ -1,72 +1,107 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>AppIDName</key>
-	<string>WDA Facebook Runner</string>
-	<key>ApplicationIdentifierPrefix</key>
-	<array>
-	<string>34QXW692J2</string>
-	</array>
-	<key>CreationDate</key>
-	<date>2026-05-24T10:00:54Z</date>
-	<key>Platform</key>
-	<array>
-		<string>iOS</string>
-		<string>xrOS</string>
-		<string>visionOS</string>
-	</array>
-	<key>IsXcodeManaged</key>
-	<false/>
-	<key>DeveloperCertificates</key>
-	<array>
-		<data>MIIFxjCCBK6gAwIBAgIQPFWAfJnnPmIimUkUCQK1KzANBgkqhkiG9w0BAQsFADB1MUQwQgYDVQQDDDtBcHBsZSBXb3JsZHdpZGUgRGV2ZWxvcGVyIFJlbGF0aW9ucyBDZXJ0aWZpY2F0aW9uIEF1dGhvcml0eTELMAkGA1UECwwCRzMxEzARBgNVBAoMCkFwcGxlIEluYy4xCzAJBgNVBAYTAlVTMB4XDTI2MDUyNDA5MDUxOVoXDTI3MDUyNDA5MDUxOFowgYwxGjAYBgoJkiaJk/IsZAEBDApIVFozWkdBOUc0MTUwMwYDVQQDDCxBcHBsZSBEZXZlbG9wbWVudDogSm9zaHVhIFdhdHRzIChUSzVCVTY5UEI0KTETMBEGA1UECwwKMzRRWFc2OTJKMjEVMBMGA1UECgwMSm9zaHVhIFdhdHRzMQswCQYDVQQGEwJVUzCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAJbsW7MxCDIUziR5v5ZOOA2IyZ/Y94fV/2BxHbwKSlULaac6AhjrLPqfqeMJxiUQeEp+VaWf9GU1+q1r86UqXpdTHeL4YB6a7FhQu0emlJ0rOcY6GTp9Fm4HmN3S18BUds87re96eoZgEWQT8WRFCKqBBWJ+CHPHMhHCXB+6KkX5LpJcVSQsEr9hNm1cGXdsOaCK9C9bzNpk0bx42+argfG8kKafVm5uSNum3pet9z4MKXOAKtiJtc9MB+AlVzQG1PZa0FxaNeNNIRQeG18jBoWbaiV4U77GjRGLDqE8KlmTym1KLH/WiZpAL799ypJHboQu+C1X6j6MYb7ZkoZ+c+ECAwEAAaOCAjgwggI0MAwGA1UdEwEB/wQCMAAwHwYDVR0jBBgwFoAUCf7AFZD5r2QKkhK5JihjDJfsp7IwcAYIKwYBBQUHAQEEZDBiMC0GCCsGAQUFBzAChiFodHRwOi8vY2VydHMuYXBwbGUuY29tL3d3ZHJnMy5kZXIwMQYIKwYBBQUHMAGGJWh0dHA6Ly9vY3NwLmFwcGxlLmNvbS9vY3NwMDMtd3dkcmczMDQwggEeBgNVHSAEggEVMIIBETCCAQ0GCSqGSIb3Y2QFATCB/zCBwwYIKwYBBQUHAgIwgbYMgbNSZWxpYW5jZSBvbiB0aGlzIGNlcnRpZmljYXRlIGJ5IGFueSBwYXJ0eSBhc3N1bWVzIGFjY2VwdGFuY2Ugb2YgdGhlIHRoZW4gYXBwbGljYWJsZSBzdGFuZGFyZCB0ZXJtcyBhbmQgY29uZGl0aW9ucyBvZiB1c2UsIGNlcnRpZmljYXRlIHBvbGljeSBhbmQgY2VydGlmaWNhdGlvbiBwcmFjdGljZSBzdGF0ZW1lbnRzLjA3BggrBgEFBQcCARYraHR0cHM6Ly93d3cuYXBwbGUuY29tL2NlcnRpZmljYXRlYXV0aG9yaXR5LzAWBgNVHSUBAf8EDDAKBggrBgEFBQcDAzAdBgNVHQ4EFgQUeJv6mU3nFgxy6yYcFnHHM9tdej0wDgYDVR0PAQH/BAQDAgeAMBMGCiqGSIb3Y2QGAQIBAf8EAgUAMBMGCiqGSIb3Y2QGAQwBAf8EAgUAMA0GCSqGSIb3DQEBCwUAA4IBAQBd99YQ2F0U/4irildD0ue8XBJuei+PKruax7icdjHScC+2RM+1hjfxsGZJOMOqs/5bpYUGI2S3L8H9rk8SHvFzvx9XpSXhSro4INDOyCy4tEoQe4ySM4bWFgzpldV/BUIow5i+FdRKXPmoXkcNkyYhEgzMYpCDdrJMIjt1kSDpbNdgVW0Ro7CcLKtfoZ4GO79APaTjMRAvoBxpFofSJIGo6IWT1ic0XmI91m7GaYkBZaNtYM6pB1sbGFED4S8cV8gUEzOta+4YaEPSC+jhj3j0pfZl+ROrSo24XstL02CQBb7TXPzDDs7Xy5UZId4EgBZ10f3csoSZsRw64y9PS3St</data>
-	</array>
+workflows:
+  build-wda:
+    name: Build WDA IPA Developer Signed
+    max_build_duration: 25
+    environment:
+      xcode: 26.4
+      ios_signing:
+        distribution_type: development
+        bundle_identifier: com.beanerflicker.WebDriverAgentRunner
+    scripts:
+      - name: Resolve packages
+        script: |
+          xcodebuild -resolvePackageDependencies \
+            -project WebDriverAgent.xcodeproj \
+            -scheme WebDriverAgentRunner
 
-	<key>DER-Encoded-Profile</key>
-	<data>MIINWgYJKoZIhvcNAQcCoIINSzCCDUcCAQExDTALBglghkgBZQMEAgEwggMaBgkqhkiG9w0BBwGgggMLBIIDBzGCAwMwDAwHVmVyc2lvbgIBATANDAhQUFFDaGVjawEB/zAQDApUaW1lVG9MaXZlAgIBbTATDA5Jc1hjb2RlTWFuYWdlZAEBADAYDAhUZWFtTmFtZQwMSm9zaHVhIFdhdHRzMBsMBE5hbWUME1dEQSBGYWNlYm9vayBSdW5uZXIwHQwMQ3JlYXRpb25EYXRlFw0yNjA1MjQxMDAwNTRaMB4MDlRlYW1JZGVudGlmaWVyMAwMCjM0UVhXNjkySjIwHwwORXhwaXJhdGlvbkRhdGUXDTI3MDUyNDEwMDA1NFowIAwJQXBwSUROYW1lDBNXREEgRmFjZWJvb2sgUnVubmVyMCEMCFBsYXRmb3JtMBUMA2lPUwwEeHJPUwwIdmlzaW9uT1MwIgwXUHJvZmlsZURpc3RyaWJ1dGlvblR5cGUMB0xJTUlURUQwKwwbQXBwbGljYXRpb25JZGVudGlmaWVyUHJlZml4MAwMCjM0UVhXNjkySjIwLAwEVVVJRAwkZTNmZDg0NDYtNTQxNi00YTI2LWFjOGItZjI1YjkyZjhhMmRjMDEMElByb3Zpc2lvbmVkRGV2aWNlczAbDBkwMDAwODEzMC0wMDAxNzg2OTExODEwMDFDMDsMFURldmVsb3BlckNlcnRpZmljYXRlczAiBCDtI7CmMrqskuV+BBkKzYP5oKj9plQZtNk7E4i70ZhqFzCB8QwMRW50aXRsZW1lbnRzcIHgAgEBsIHaMFUMFmFwcGxpY2F0aW9uLWlkZW50aWZpZXIMOzM0UVhXNjkySjIuY29tLmJlYW5lcmZsaWNrZXIuV2ViRHJpdmVyQWdlbnRSdW5uZXIueGN0cnVubmVyMDEMI2NvbS5hcHBsZS5kZXZlbG9wZXIudGVhbS1pZGVudGlmaWVyDAozNFFYVzY5MkoyMBMMDmdldC10YXNrLWFsbG93AQH/MDkMFmtleWNoYWluLWFjY2Vzcy1ncm91cHMwHwwMMzRRWFc2OTJKMi4qDA9jb20uYXBwbGUudG9rZW6gggg9MIICQzCCAcmgAwIBAgIILcX8iNLFS5UwCgYIKoZIzj0EAwMwZzEbMBkGA1UEAwwSQXBwbGUgUm9v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</data>
-												
-			<key>PPQCheck</key>
-	<true/>
+      - name: Build unsigned
+        script: |
+          xcodebuild \
+            -project WebDriverAgent.xcodeproj \
+            -scheme WebDriverAgentRunner \
+            -configuration Debug \
+            -sdk iphoneos \
+            -arch arm64 \
+            -derivedDataPath ./build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE="" \
+            DEVELOPMENT_TEAM="" \
+            CODE_SIGNING_REQUIRED=NO \
+            PRODUCT_BUNDLE_IDENTIFIER=com.beanerflicker.WebDriverAgentRunner
 
-	<key>Entitlements</key>
-	<dict>
-				
-				<key>application-identifier</key>
-		<string>34QXW692J2.com.beanerflicker.WebDriverAgentRunner.xctrunner</string>
-				
-				<key>keychain-access-groups</key>
-		<array>
-				<string>34QXW692J2.*</string>
-				<string>com.apple.token</string>
-		</array>
-				
-				<key>get-task-allow</key>
-		<true/>
-				
-				<key>com.apple.developer.team-identifier</key>
-		<string>34QXW692J2</string>
-		
-	</dict>
-	<key>ExpirationDate</key>
-	<date>2027-05-24T10:00:54Z</date>
-	<key>Name</key>
-	<string>WDA Facebook Runner</string>
-	<key>ProvisionedDevices</key>
-	<array>
-		<string>00008130-000178691181001C</string>
-	</array>
-	<key>TeamIdentifier</key>
-	<array>
-		<string>34QXW692J2</string>
-	</array>
-	<key>TeamName</key>
-	<string>Joshua Watts</string>
-	<key>TimeToLive</key>
-	<integer>365</integer>
-	<key>UUID</key>
-	<string>e3fd8446-5416-4a26-ac8b-f25b92f8a2dc</string>
-	<key>Version</key>
-	<integer>1</integer>
-</dict>
-</plist>
+      - name: Sign with developer certificate
+        script: |
+          APP="./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
+
+          CERT=$(security find-identity -v -p codesigning \
+            | grep "Apple Development" | head -1 \
+            | awk -F'"' '{print $2}')
+          echo "Certificate: $CERT"
+
+          PROFILE=""
+          for f in ~/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision; do
+            security cms -D -i "$f" > /tmp/profile_check.plist 2>/dev/null
+            APP_ID=$(/usr/libexec/PlistBuddy -c \
+              "Print :Entitlements:application-identifier" \
+              /tmp/profile_check.plist 2>/dev/null || echo "")
+            if echo "$APP_ID" | grep -q "xctrunner"; then
+              PROFILE="$f"
+              echo "Using profile: $f"
+              echo "App ID: $APP_ID"
+              break
+            fi
+          done
+
+          if [ -z "$PROFILE" ]; then
+            echo "ERROR: xctrunner profile not found"
+            exit 1
+          fi
+
+          cp "$PROFILE" "$APP/embedded.mobileprovision"
+          echo "Embedded profile"
+
+          python3 -c "
+          import plistlib
+          entitlements = {
+            'application-identifier': '34QXW692J2.com.beanerflicker.WebDriverAgentRunner.xctrunner',
+            'com.apple.developer.team-identifier': '34QXW692J2',
+            'get-task-allow': True,
+            'keychain-access-groups': ['34QXW692J2.*', 'com.apple.token']
+          }
+          with open('/tmp/entitlements.plist', 'wb') as f:
+            plistlib.dump(entitlements, f, fmt=plistlib.FMT_XML)
+          print('Entitlements written')
+          "
+
+          echo "Entitlements:"
+          cat /tmp/entitlements.plist
+
+          find "$APP" -type f | while read f; do
+            if file "$f" | grep -q "Mach-O"; then
+              codesign --force --sign "$CERT" \
+                --entitlements /tmp/entitlements.plist \
+                "$f" 2>/dev/null || true
+            fi
+          done
+
+          codesign --force --deep --sign "$CERT" \
+            --entitlements /tmp/entitlements.plist \
+            "$APP"
+
+          codesign --verify --verbose "$APP" \
+            && echo "SIGNATURE VALID" \
+            || echo "SIGNATURE FAILED"
+
+      - name: Package IPA
+        script: |
+          APP="./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
+          mkdir -p /tmp/Payload
+          cp -rp "$APP" /tmp/Payload/
+          cd /tmp
+          /usr/bin/zip -r WebDriverAgent.ipa Payload/
+          cp WebDriverAgent.ipa ~/WebDriverAgent.ipa
+          echo "Final size: $(du -sh ~/WebDriverAgent.ipa)"
+
+    artifacts:
+      - ~/WebDriverAgent.ipa
