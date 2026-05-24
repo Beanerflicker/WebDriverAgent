@@ -14,20 +14,21 @@ workflows:
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner
 
+      - name: Patch project signing
+        script: |
+          # Force automatic signing in project file for all targets
+          sed -i 's/CODE_SIGN_STYLE = Manual;/CODE_SIGN_STYLE = Automatic;/g' \
+            WebDriverAgent.xcodeproj/project.pbxproj
+
+          # Clear any hardcoded provisioning profile specifiers
+          sed -i 's/PROVISIONING_PROFILE_SPECIFIER = ".*";/PROVISIONING_PROFILE_SPECIFIER = "";/g' \
+            WebDriverAgent.xcodeproj/project.pbxproj
+
+          echo "Patched signing settings:"
+          grep "CODE_SIGN_STYLE" WebDriverAgent.xcodeproj/project.pbxproj | sort -u
+
       - name: Build and Sign
         script: |
-          TEAM_ID="34QXW692J2"
-          RUNNER_UUID="578b3d42-a00d-4e72-8559-afe0a01e7473"
-
-          # Create xcconfig to force WebDriverAgentLib to Automatic signing
-          cat > /tmp/lib_signing.xcconfig << 'EOF'
-          CODE_SIGN_STYLE = Automatic
-          CODE_SIGN_IDENTITY = Apple Development
-          PROVISIONING_PROFILE =
-          PROVISIONING_PROFILE_SPECIFIER =
-          DEVELOPMENT_TEAM = 34QXW692J2
-          EOF
-
           xcodebuild \
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner \
@@ -35,12 +36,11 @@ workflows:
             -sdk iphoneos \
             -arch arm64 \
             -derivedDataPath ./build \
-            -xcconfig /tmp/lib_signing.xcconfig \
-            DEVELOPMENT_TEAM=$TEAM_ID \
+            -allowProvisioningUpdates \
+            DEVELOPMENT_TEAM=34QXW692J2 \
             CODE_SIGN_IDENTITY="Apple Development" \
-            CODE_SIGN_STYLE=Manual \
-            PRODUCT_BUNDLE_IDENTIFIER=com.beanerflicker.WebDriverAgentRunner \
-            PROVISIONING_PROFILE=$RUNNER_UUID
+            CODE_SIGN_STYLE=Automatic \
+            PRODUCT_BUNDLE_IDENTIFIER=com.beanerflicker.WebDriverAgentRunner
 
       - name: Package IPA
         script: |
