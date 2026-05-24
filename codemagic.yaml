@@ -9,16 +9,12 @@ workflows:
         bundle_identifier: com.beanerflicker.WebDriverAgentRunner
     scripts:
 
-      # ── 1. Resolve Swift package dependencies ──────────────────────────────
       - name: Resolve packages
         script: |
           xcodebuild -resolvePackageDependencies \
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner
 
-      # ── 2. Build unsigned binary ───────────────────────────────────────────
-      #   We build unsigned first so we can patch dylib load commands before
-      #   signing.  Any signing at build time would be invalidated by patching.
       - name: Build unsigned
         script: |
           xcodebuild \
@@ -35,94 +31,48 @@ workflows:
             CODE_SIGNING_REQUIRED=NO \
             PRODUCT_BUNDLE_IDENTIFIER=com.beanerflicker.WebDriverAgentRunner
 
-      # ── 3. Bundle and patch libraries ─────────────────────────────────────
-      #
-      #   Root cause of the crash (IPS: 494B6028, 2026-05-24):
-      #     +[XCTRunnerDaemonSession sharedSession] assertion failure
-      #     at -[XCUIDevice initLocalDeviceWithPlatform:]
-      #
-      #   This crash happens at LAUNCH because testmanagerd is not set up —
-      #   meaning WDA was opened by tapping the icon.  The binary patches here
-      #   fix the RUNTIME framework compatibility issues so that once WDA IS
-      #   launched correctly (via tidevice/Appium), it doesn't immediately abort.
-      #
-      #   Three fixes applied:
-      #   (a) Copy lib_TestingInterop.dylib into the app bundle so the embedded
-      #       copy is found at @loader_path instead of the system @rpath which
-      #       is unavailable inside the app sandbox.
-      #   (b) Patch Testing.framework's rpath reference to use @loader_path.
-      #   (c) Weak-link the _Testing_Foundation.framework reference in every
-      #       binary that links it hard — libXCTestSwiftSupport, XCTestCore,
-      #       and the runner binary itself.  Hard-linking a framework that lives
-      #       outside the bundle causes dyld to abort on iOS 26 if the path
-      #       resolves differently than the build-time expectation.
       - name: Bundle and patch libraries
         script: |
           APP="./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
 
-          # Verify the app was actually built
           if [ ! -d "$APP" ]; then
             echo "ERROR: App bundle not found at $APP"
             find ./build -name "*.app" -type d 2>/dev/null || true
             exit 1
           fi
-          echo "App bundle found: $APP"
-          echo "Contents:"
-          ls "$APP/Frameworks/" 2>/dev/null || echo "(no Frameworks dir yet)"
+          echo "App bundle found"
 
-          # (a) Copy lib_TestingInterop.dylib into bundle Frameworks
-          LIB_SRC="/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/lib/lib_TestingInterop.dylib"
-          if [ -f "$LIB_SRC" ]; then
-            cp "$LIB_SRC" "$APP/Frameworks/"
-            echo "Copied lib_TestingInterop.dylib"
-          else
-            echo "WARNING: lib_TestingInterop.dylib not found at expected path, searching..."
-            FOUND=$(find /Applications/Xcode.app -name "lib_TestingInterop.dylib" 2>/dev/null | head -1)
-            if [ -n "$FOUND" ]; then
-              cp "$FOUND" "$APP/Frameworks/"
-              echo "Copied from: $FOUND"
-            else
-              echo "ERROR: lib_TestingInterop.dylib not found anywhere in Xcode.app"
-              exit 1
-            fi
+          LIB_SRC=$(find /Applications/Xcode.app -name "lib_TestingInterop.dylib" 2>/dev/null | head -1)
+          if [ -z "$LIB_SRC" ]; then
+            echo "ERROR: lib_TestingInterop.dylib not found in Xcode.app"
+            exit 1
           fi
+          cp "$LIB_SRC" "$APP/Frameworks/"
+          echo "Copied lib_TestingInterop.dylib"
 
-          # (b) Patch Testing.framework rpath so it finds the bundled interop lib
           install_name_tool \
             -change "@rpath/lib_TestingInterop.dylib" \
-              "@loader_path/../lib_TestingInterop.dylib" \
+            "@loader_path/../lib_TestingInterop.dylib" \
             "$APP/Frameworks/Testing.framework/Testing" 2>/dev/null || true
           echo "Patched Testing.framework rpath"
 
-          # (c) Write and run the weak-link patcher on all three binaries
-          #     that hard-link _Testing_Foundation.framework
-          cat << 'PYEOF' | base64 -d > /tmp/patch_weak.py
-aW1wb3J0IHN0cnVjdCwgc3lzCgpTVUJTVFJJTkcgPSAnX1Rlc3RpbmdfRm91bmRhdGlvbi5mcmFtZXdvcmsnCkxDX0xPQURfRFlMSUIgICAgICA9IDB4MDAwMDAwMEMKTENfTE9BRF9XRUFLX0RZTElCID0gMHg4MDAwMDAxOApGQVRfTUFHSUMgICAgPSAweENBRkVCQUJFCkZBVF9NQUdJQ182NCA9IDB4Q0FGRUJBQkYKCmRlZiBwYXRjaF93ZWFrKGZpbGVwYXRoKToKICAgIHdpdGggb3BlbihmaWxlcGF0aCwgJ3JiJykgYXMgZjoKICAgICAgICBkYXRhID0gYnl0ZWFycmF5KGYucmVhZCgpKQoKICAgIG1hZ2ljID0gc3RydWN0LnVucGFja19mcm9tKCc+SScsIGRhdGEsIDApWzBdCiAgICBvZmZzZXRzID0gW10KCiAgICBpZiBtYWdpYyA9PSBGQVRfTUFHSUM6CiAgICAgICAgbmZhdCA9IHN0cnVjdC51bnBhY2tfZnJvbSgnPkknLCBkYXRhLCA0KVswXQogICAgICAgIGZvciBpIGluIHJhbmdlKG5mYXQpOgogICAgICAgICAgICAjIGZhdF9hcmNoOiBjcHV0eXBlKDQpK2NwdXN1YnR5cGUoNCkrb2Zmc2V0KDQpK3NpemUoNCkrYWxpZ24oNCkgPSAyMCBieXRlcwogICAgICAgICAgICBvZmYgPSBzdHJ1Y3QudW5wYWNrX2Zyb20oJz5JJywgZGF0YSwgOCArIGkgKiAyMCArIDgpWzBdCiAgICAgICAgICAgIG9mZnNldHMuYXBwZW5kKG9mZikKICAgIGVsaWYgbWFnaWMgPT0gRkFUX01BR0lDXzY0OgogICAgICAgIG5mYXQgPSBzdHJ1Y3QudW5wYWNrX2Zyb20oJz5JJywgZGF0YSwgNClbMF0KICAgICAgICBmb3IgaSBpbiByYW5nZShuZmF0KToKICAgICAgICAgICAgIyBmYXRfYXJjaF82NDogY3B1dHlwZSg0KStjcHVzdWJ0eXBlKDQpK29mZnNldCg4KStzaXplKDgpK2FsaWduKDQpK3Jlc2VydmVkKDQpID0gMzIgYnl0ZXMKICAgICAgICAgICAgb2ZmID0gc3RydWN0LnVucGFja19mcm9tKCc+UScsIGRhdGEsIDggKyBpICogMzIgKyA4KVswXQogICAgICAgICAgICBvZmZzZXRzLmFwcGVuZChvZmYpCiAgICBlbHNlOgogICAgICAgIG9mZnNldHMgPSBbMF0KCiAgICBwcmludChmJ09mZnNldHMgdG8gY2hlY2s6IHtvZmZzZXRzfScpCiAgICBwYXRjaGVkID0gRmFsc2UKICAgIGZvciBiYXNlIGluIG9mZnNldHM6CiAgICAgICAgaWYgYmFzZSArIDMyID4gbGVuKGRhdGEpOgogICAgICAgICAgICBwcmludChmJ1NraXBwaW5nIG9mZnNldCB7YmFzZX0gKG91dCBvZiBib3VuZHMpJykKICAgICAgICAgICAgY29udGludWUKICAgICAgICBtaCA9IHN0cnVjdC51bnBhY2tfZnJvbSgnPEknLCBkYXRhLCBiYXNlKVswXQogICAgICAgIHByaW50KGYnTWFnaWMgYXQge2Jhc2V9OiAweHttaDowOFh9JykKICAgICAgICBpZiBtaCBub3QgaW4gKDB4RkVFREZBQ0YsIDB4Q0ZGQUVERkUpOgogICAgICAgICAgICBjb250aW51ZQogICAgICAgIG5jbWRzID0gc3RydWN0LnVucGFja19mcm9tKCc8SScsIGRhdGEsIGJhc2UgKyAxNilbMF0KICAgICAgICBwb3MgPSBiYXNlICsgMzIKICAgICAgICBmb3IgXyBpbiByYW5nZShuY21kcyk6CiAgICAgICAgICAgIGlmIHBvcyArIDggPiBsZW4oZGF0YSk6CiAgICAgICAgICAgICAgICBicmVhawogICAgICAgICAgICBjbWQgPSBzdHJ1Y3QudW5wYWNrX2Zyb20oJzxJJywgZGF0YSwgcG9zKVswXQogICAgICAgICAgICBjc3ogPSBzdHJ1Y3QudW5wYWNrX2Zyb20oJzxJJywgZGF0YSwgcG9zICsgNClbMF0KICAgICAgICAgICAgaWYgY3N6ID09IDA6CiAgICAgICAgICAgICAgICBicmVhawogICAgICAgICAgICBpZiBjbWQgPT0gTENfTE9BRF9EWUxJQiBhbmQgcG9zICsgY3N6IDw9IGxlbihkYXRhKToKICAgICAgICAgICAgICAgIG5vZmYgPSBzdHJ1Y3QudW5wYWNrX2Zyb20oJzxJJywgZGF0YSwgcG9zICsgOClbMF0KICAgICAgICAgICAgICAgIG5wID0gcG9zICsgbm9mZgogICAgICAgICAgICAgICAgbmUgPSBucAogICAgICAgICAgICAgICAgd2hpbGUgbmUgPCBwb3MgKyBjc3ogYW5kIG5lIDwgbGVuKGRhdGEpIGFuZCBkYXRhW25lXToKICAgICAgICAgICAgICAgICAgICBuZSArPSAxCiAgICAgICAgICAgICAgICBuYW1lID0gZGF0YVtucDpuZV0uZGVjb2RlKCd1dGYtOCcsIGVycm9ycz0ncmVwbGFjZScpCiAgICAgICAgICAgICAgICBpZiBTVUJTVFJJTkcgaW4gbmFtZToKICAgICAgICAgICAgICAgICAgICBwcmludChmJ1BhdGNoaW5nOiB7bmFtZX0gLT4gTENfTE9BRF9XRUFLX0RZTElCJykKICAgICAgICAgICAgICAgICAgICBzdHJ1Y3QucGFja19pbnRvKCc8SScsIGRhdGEsIHBvcywgTENfTE9BRF9XRUFLX0RZTElCKQogICAgICAgICAgICAgICAgICAgIHBhdGNoZWQgPSBUcnVlCiAgICAgICAgICAgIHBvcyArPSBjc3oKCiAgICBpZiBwYXRjaGVkOgogICAgICAgIHdpdGggb3BlbihmaWxlcGF0aCwgJ3diJykgYXMgZjoKICAgICAgICAgICAgZi53cml0ZShkYXRhKQogICAgICAgIHByaW50KGYnU2F2ZWQ6IHtmaWxlcGF0aH0nKQogICAgZWxzZToKICAgICAgICBwcmludChmJ05vdCBmb3VuZDoge1NVQlNUUklOR30nKQoKZm9yIHBhdGggaW4gc3lzLmFyZ3ZbMTpdOgogICAgcHJpbnQoZictLS0gUGF0Y2hpbmc6IHtwYXRofScpCiAgICBwYXRjaF93ZWFrKHBhdGgpCg==
-PYEOF
+          echo "aW1wb3J0IHN0cnVjdCwgc3lzCgpTVUJTVFJJTkcgPSAnX1Rlc3RpbmdfRm91bmRhdGlvbi5mcmFtZXdvcmsnCkxDX0xPQURfRFlMSUIgICAgICA9IDB4MDAwMDAwMEMKTENfTE9BRF9XRUFLX0RZTElCID0gMHg4MDAwMDAxOApGQVRfTUFHSUMgICAgPSAweENBRkVCQUJFCkZBVF9NQUdJQ182NCA9IDB4Q0FGRUJBQkYKCmRlZiBwYXRjaF93ZWFrKGZpbGVwYXRoKToKICAgIHdpdGggb3BlbihmaWxlcGF0aCwgJ3JiJykgYXMgZjoKICAgICAgICBkYXRhID0gYnl0ZWFycmF5KGYucmVhZCgpKQogICAgbWFnaWMgPSBzdHJ1Y3QudW5wYWNrX2Zyb20oJz5JJywgZGF0YSwgMClbMF0KICAgIG9mZnNldHMgPSBbXQogICAgaWYgbWFnaWMgPT0gRkFUX01BR0lDOgogICAgICAgIG5mYXQgPSBzdHJ1Y3QudW5wYWNrX2Zyb20oJz5JJywgZGF0YSwgNClbMF0KICAgICAgICBmb3IgaSBpbiByYW5nZShuZmF0KToKICAgICAgICAgICAgb2ZmID0gc3RydWN0LnVucGFja19mcm9tKCc+SScsIGRhdGEsIDggKyBpICogMjAgKyA4KVswXQogICAgICAgICAgICBvZmZzZXRzLmFwcGVuZChvZmYpCiAgICBlbGlmIG1hZ2ljID09IEZBVF9NQUdJQ182NDoKICAgICAgICBuZmF0ID0gc3RydWN0LnVucGFja19mcm9tKCc+SScsIGRhdGEsIDQpWzBdCiAgICAgICAgZm9yIGkgaW4gcmFuZ2UobmZhdCk6CiAgICAgICAgICAgIG9mZiA9IHN0cnVjdC51bnBhY2tfZnJvbSgnPlEnLCBkYXRhLCA4ICsgaSAqIDMyICsgOClbMF0KICAgICAgICAgICAgb2Zmc2V0cy5hcHBlbmQob2ZmKQogICAgZWxzZToKICAgICAgICBvZmZzZXRzID0gWzBdCiAgICBwcmludChmIk9mZnNldHM6IHtvZmZzZXRzfSIpCiAgICBwYXRjaGVkID0gRmFsc2UKICAgIGZvciBiYXNlIGluIG9mZnNldHM6CiAgICAgICAgaWYgYmFzZSArIDMyID4gbGVuKGRhdGEpOgogICAgICAgICAgICBjb250aW51ZQogICAgICAgIG1oID0gc3RydWN0LnVucGFja19mcm9tKCc8SScsIGRhdGEsIGJhc2UpWzBdCiAgICAgICAgcHJpbnQoZiJNYWdpYyBhdCB7YmFzZX06IDB4e21oOjA4WH0iKQogICAgICAgIGlmIG1oIG5vdCBpbiAoMHhGRUVERkFDRiwgMHhDRkZBRURGRSk6CiAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgbmNtZHMgPSBzdHJ1Y3QudW5wYWNrX2Zyb20oJzxJJywgZGF0YSwgYmFzZSArIDE2KVswXQogICAgICAgIHBvcyA9IGJhc2UgKyAzMgogICAgICAgIGZvciBfIGluIHJhbmdlKG5jbWRzKToKICAgICAgICAgICAgaWYgcG9zICsgOCA+IGxlbihkYXRhKToKICAgICAgICAgICAgICAgIGJyZWFrCiAgICAgICAgICAgIGNtZCA9IHN0cnVjdC51bnBhY2tfZnJvbSgnPEknLCBkYXRhLCBwb3MpWzBdCiAgICAgICAgICAgIGNzeiA9IHN0cnVjdC51bnBhY2tfZnJvbSgnPEknLCBkYXRhLCBwb3MgKyA0KVswXQogICAgICAgICAgICBpZiBjc3ogPT0gMDoKICAgICAgICAgICAgICAgIGJyZWFrCiAgICAgICAgICAgIGlmIGNtZCA9PSBMQ19MT0FEX0RZTElCIGFuZCBwb3MgKyBjc3ogPD0gbGVuKGRhdGEpOgogICAgICAgICAgICAgICAgbm9mZiA9IHN0cnVjdC51bnBhY2tfZnJvbSgnPEknLCBkYXRhLCBwb3MgKyA4KVswXQogICAgICAgICAgICAgICAgbnBfID0gcG9zICsgbm9mZgogICAgICAgICAgICAgICAgbmUgPSBucF8KICAgICAgICAgICAgICAgIHdoaWxlIG5lIDwgcG9zICsgY3N6IGFuZCBuZSA8IGxlbihkYXRhKSBhbmQgZGF0YVtuZV06CiAgICAgICAgICAgICAgICAgICAgbmUgKz0gMQogICAgICAgICAgICAgICAgbmFtZSA9IGRhdGFbbnBfOm5lXS5kZWNvZGUoJ3V0Zi04JywgZXJyb3JzPSdyZXBsYWNlJykKICAgICAgICAgICAgICAgIGlmIFNVQlNUUklORyBpbiBuYW1lOgogICAgICAgICAgICAgICAgICAgIHByaW50KGYiUGF0Y2hpbmc6IHtuYW1lfSAtPiBMQ19MT0FEX1dFQUtfRFlMSUIiKQogICAgICAgICAgICAgICAgICAgIHN0cnVjdC5wYWNrX2ludG8oJzxJJywgZGF0YSwgcG9zLCBMQ19MT0FEX1dFQUtfRFlMSUIpCiAgICAgICAgICAgICAgICAgICAgcGF0Y2hlZCA9IFRydWUKICAgICAgICAgICAgcG9zICs9IGNzegogICAgaWYgcGF0Y2hlZDoKICAgICAgICB3aXRoIG9wZW4oZmlsZXBhdGgsICd3YicpIGFzIGY6CiAgICAgICAgICAgIGYud3JpdGUoZGF0YSkKICAgICAgICBwcmludChmIlNhdmVkOiB7ZmlsZXBhdGh9IikKICAgIGVsc2U6CiAgICAgICAgcHJpbnQoZiJOb3QgZm91bmQ6IHtTVUJTVFJJTkd9IGluIHtmaWxlcGF0aH0iKQoKZm9yIHBhdGggaW4gc3lzLmFyZ3ZbMTpdOgogICAgcHJpbnQoZiItLS0ge3BhdGh9IikKICAgIHBhdGNoX3dlYWsocGF0aCkK" | base64 -d > /tmp/patch_weak.py
 
-          # Patch all three binaries that can hard-link _Testing_Foundation
           python3 /tmp/patch_weak.py \
             "$APP/Frameworks/libXCTestSwiftSupport.dylib" \
             "$APP/Frameworks/XCTestCore.framework/XCTestCore" \
             "$APP/WebDriverAgentRunner-Runner"
-          echo "All weak-link patches complete"
+          echo "All patches complete"
+          echo "Frameworks:"
+          ls "$APP/Frameworks/"
 
-          echo "Final Frameworks:"
-          ls -lh "$APP/Frameworks/"
-
-      # ── 4. Sign with developer certificate ────────────────────────────────
-      #   Uses the exact entitlements from your provisioning profile:
-      #     UUID: e3fd8446-5416-4a26-ac8b-f25b92f8a2dc
-      #     Team: 34QXW692J2 (Joshua Watts)
-      #   Profile matched by UUID directly — not by fragile string search.
       - name: Sign with developer certificate
         script: |
           APP="./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
-          TEAM_ID="34QXW692J2"
+          export TEAM_ID="34QXW692J2"
+          export APP_ID="${TEAM_ID}.com.beanerflicker.WebDriverAgentRunner.xctrunner"
           PROFILE_UUID="e3fd8446-5416-4a26-ac8b-f25b92f8a2dc"
-          APP_ID="${TEAM_ID}.com.beanerflicker.WebDriverAgentRunner.xctrunner"
 
-          # Find certificate
           CERT=$(security find-identity -v -p codesigning \
             | grep "Apple Development" | head -1 \
             | awk -F'"' '{print $2}')
@@ -133,21 +83,18 @@ PYEOF
           fi
           echo "Certificate: $CERT"
 
-          # Find provisioning profile by UUID (exact match — no fragile grep)
           PROFILE=""
           for f in ~/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision; do
             security cms -D -i "$f" > /tmp/profile_check.plist 2>/dev/null
             UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /tmp/profile_check.plist 2>/dev/null || echo "")
             if [ "$UUID" = "$PROFILE_UUID" ]; then
               PROFILE="$f"
-              echo "Found profile by UUID: $f"
+              echo "Matched profile by UUID"
               break
             fi
           done
 
-          # Fallback: match by application-identifier containing xctrunner
           if [ -z "$PROFILE" ]; then
-            echo "UUID match failed, falling back to app-id match..."
             for f in ~/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision; do
               security cms -D -i "$f" > /tmp/profile_check.plist 2>/dev/null
               FOUND_ID=$(/usr/libexec/PlistBuddy -c \
@@ -155,76 +102,43 @@ PYEOF
                 /tmp/profile_check.plist 2>/dev/null || echo "")
               if echo "$FOUND_ID" | grep -q "beanerflicker.*xctrunner"; then
                 PROFILE="$f"
-                echo "Fallback matched: $f  (app-id: $FOUND_ID)"
+                echo "Fallback matched profile"
                 break
               fi
             done
           fi
 
           if [ -z "$PROFILE" ]; then
-            echo "ERROR: No matching provisioning profile found."
-            echo "Profiles available:"
-            for f in ~/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision; do
-              security cms -D -i "$f" > /tmp/profile_check.plist 2>/dev/null
-              echo "  $f"
-              /usr/libexec/PlistBuddy -c "Print :Name" /tmp/profile_check.plist 2>/dev/null
-              /usr/libexec/PlistBuddy -c "Print :UUID" /tmp/profile_check.plist 2>/dev/null
-            done
+            echo "ERROR: No matching provisioning profile found"
             exit 1
           fi
 
           cp "$PROFILE" "$APP/embedded.mobileprovision"
           echo "Embedded provisioning profile"
 
-          # Write entitlements exactly matching the profile
-          python3 -c "
-import plistlib
-entitlements = {
-  'application-identifier': '${APP_ID}',
-  'com.apple.developer.team-identifier': '${TEAM_ID}',
-  'get-task-allow': True,
-  'keychain-access-groups': ['${TEAM_ID}.*', 'com.apple.token']
-}
-with open('/tmp/entitlements.plist', 'wb') as f:
-  plistlib.dump(entitlements, f, fmt=plistlib.FMT_XML)
-print('Entitlements written')
-"
+          echo "aW1wb3J0IHBsaXN0bGliLCBvcwp0ZWFtID0gb3MuZW52aXJvblsnVEVBTV9JRCddCmFwcF9pZCA9IG9zLmVudmlyb25bJ0FQUF9JRCddCmUgPSB7CiAgJ2FwcGxpY2F0aW9uLWlkZW50aWZpZXInOiBhcHBfaWQsCiAgJ2NvbS5hcHBsZS5kZXZlbG9wZXIudGVhbS1pZGVudGlmaWVyJzogdGVhbSwKICAnZ2V0LXRhc2stYWxsb3cnOiBUcnVlLAogICdrZXljaGFpbi1hY2Nlc3MtZ3JvdXBzJzogW3RlYW0gKyAnLionLCAnY29tLmFwcGxlLnRva2VuJ10KfQp3aXRoIG9wZW4oJy90bXAvZW50aXRsZW1lbnRzLnBsaXN0JywgJ3diJykgYXMgZjoKICBwbGlzdGxpYi5kdW1wKGUsIGYsIGZtdD1wbGlzdGxpYi5GTVRfWE1MKQpwcmludCgnRW50aXRsZW1lbnRzIHdyaXR0ZW4nKQo=" | base64 -d > /tmp/write_entitlements.py
+          python3 /tmp/write_entitlements.py
 
-          # Sign in correct order: deepest first, app bundle last
-          # 1. Loose dylibs
           find "$APP" -name "*.dylib" | while read f; do
             codesign --force --sign "$CERT" "$f" 2>/dev/null || true
           done
-
-          # 2. Frameworks inside PlugIns (nested deepest)
           find "$APP/PlugIns" -name "*.framework" | sort -r | while read f; do
             codesign --force --sign "$CERT" "$f" 2>/dev/null || true
           done
-
-          # 3. xctest bundles inside PlugIns
           find "$APP/PlugIns" -maxdepth 1 -name "*.xctest" | while read f; do
             codesign --force --sign "$CERT" "$f" 2>/dev/null || true
           done
-
-          # 4. Top-level Frameworks
           find "$APP/Frameworks" -maxdepth 1 -name "*.framework" | while read f; do
             codesign --force --sign "$CERT" "$f" 2>/dev/null || true
           done
-
-          # 5. App bundle itself (must be last)
           codesign --force --sign "$CERT" \
             --entitlements /tmp/entitlements.plist \
             "$APP"
 
-          # Verify
           codesign --verify --verbose=2 "$APP" \
             && echo "SIGNATURE VALID" \
             || { echo "SIGNATURE FAILED"; exit 1; }
 
-          echo "Embedded entitlements:"
-          codesign -d --entitlements :- "$APP" 2>/dev/null || true
-
-      # ── 5. Package IPA ─────────────────────────────────────────────────────
       - name: Package IPA
         script: |
           APP="./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
@@ -235,8 +149,6 @@ print('Entitlements written')
           /usr/bin/zip -r WebDriverAgent.ipa Payload/ -x "*.DS_Store"
           cp WebDriverAgent.ipa ~/WebDriverAgent.ipa
           echo "Final size: $(du -sh ~/WebDriverAgent.ipa)"
-          echo "IPA contents (top level):"
-          /usr/bin/unzip -l ~/WebDriverAgent.ipa | head -30
 
     artifacts:
       - ~/WebDriverAgent.ipa
