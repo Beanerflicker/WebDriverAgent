@@ -14,20 +14,7 @@ workflows:
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner
 
-      - name: Patch project signing
-        script: |
-          # Force automatic signing in project file for all targets
-          sed -i 's/CODE_SIGN_STYLE = Manual;/CODE_SIGN_STYLE = Automatic;/g' \
-            WebDriverAgent.xcodeproj/project.pbxproj
-
-          # Clear any hardcoded provisioning profile specifiers
-          sed -i 's/PROVISIONING_PROFILE_SPECIFIER = ".*";/PROVISIONING_PROFILE_SPECIFIER = "";/g' \
-            WebDriverAgent.xcodeproj/project.pbxproj
-
-          echo "Patched signing settings:"
-          grep "CODE_SIGN_STYLE" WebDriverAgent.xcodeproj/project.pbxproj | sort -u
-
-      - name: Build and Sign
+      - name: Build unsigned
         script: |
           xcodebuild \
             -project WebDriverAgent.xcodeproj \
@@ -36,17 +23,77 @@ workflows:
             -sdk iphoneos \
             -arch arm64 \
             -derivedDataPath ./build \
-            -allowProvisioningUpdates \
-            DEVELOPMENT_TEAM=34QXW692J2 \
-            CODE_SIGN_IDENTITY="Apple Development" \
-            CODE_SIGN_STYLE=Automatic \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE="" \
+            DEVELOPMENT_TEAM="" \
+            CODE_SIGNING_REQUIRED=NO \
             PRODUCT_BUNDLE_IDENTIFIER=com.beanerflicker.WebDriverAgentRunner
 
-      - name: Package IPA
+      - name: Sign with developer certificate
         script: |
           APP="./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
           echo "App found: $(test -d "$APP" && echo YES || echo NO)"
           echo "File count: $(find "$APP" -type f | wc -l)"
+
+          # Get real Apple Development certificate from keychain
+          CERT=$(security find-identity -v -p codesigning \
+            | grep "Apple Development" | head -1 \
+            | awk -F'"' '{print $2}')
+          echo "Signing certificate: $CERT"
+
+          # Find the xctrunner provisioning profile
+          PROFILE=""
+          for f in ~/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision; do
+            PLIST=$(security cms -D -i "$f")
+            APP_ID=$(echo "$PLIST" | grep -A1 "application-identifier" \
+              | grep string | sed 's/.*<string>//;s/<\/string>//')
+            if echo "$APP_ID" | grep -q "xctrunner"; then
+              PROFILE="$f"
+              echo "Found xctrunner profile: $f"
+              break
+            fi
+          done
+
+          if [ -z "$PROFILE" ]; then
+            echo "ERROR: xctrunner profile not found"
+            exit 1
+          fi
+
+          # Embed provisioning profile into app bundle
+          cp "$PROFILE" "$APP/embedded.mobileprovision"
+          echo "Embedded profile"
+
+          # Extract entitlements from the provisioning profile
+          security cms -D -i "$PROFILE" \
+            | /usr/libexec/PlistBuddy -x \
+              -c "Print :Entitlements" /dev/stdin \
+            > /tmp/entitlements.plist
+          echo "Entitlements:"
+          cat /tmp/entitlements.plist
+
+          # Sign all Mach-O binaries inside the bundle
+          find "$APP" -type f | while read f; do
+            if file "$f" | grep -q "Mach-O"; then
+              codesign --force --sign "$CERT" \
+                --entitlements /tmp/entitlements.plist \
+                "$f" 2>/dev/null || true
+            fi
+          done
+
+          # Sign the full app bundle
+          codesign --force --deep --sign "$CERT" \
+            --entitlements /tmp/entitlements.plist \
+            "$APP"
+
+          # Verify signature
+          codesign --verify --verbose "$APP" \
+            && echo "SIGNATURE VALID" \
+            || echo "SIGNATURE FAILED"
+
+      - name: Package IPA
+        script: |
+          APP="./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
 
           mkdir -p /tmp/Payload
           cp -rp "$APP" /tmp/Payload/
