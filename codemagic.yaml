@@ -30,14 +30,14 @@ workflows:
             CODE_SIGNING_REQUIRED=NO \
             PRODUCT_BUNDLE_IDENTIFIER=com.beanerflicker.WebDriverAgentRunner
 
-      - name: Bundle missing library
+      - name: Bundle and patch libraries
         script: |
           APP="./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
 
           # Bundle lib_TestingInterop.dylib
           LIB="/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/lib/lib_TestingInterop.dylib"
-          echo "lib_TestingInterop exists: $(test -f "$LIB" && echo YES || echo NO)"
           cp "$LIB" "$APP/Frameworks/"
+          echo "Copied lib_TestingInterop.dylib"
 
           # Patch Testing.framework to find lib_TestingInterop
           TESTING="$APP/Frameworks/Testing.framework/Testing"
@@ -45,60 +45,73 @@ workflows:
             "@rpath/lib_TestingInterop.dylib" \
             "@loader_path/../lib_TestingInterop.dylib" \
             "$TESTING" 2>/dev/null || true
+          echo "Patched Testing.framework"
 
-            # Patch libXCTestSwiftSupport to weak-link _Testing_Foundation
+          # Write Python script to make _Testing_Foundation weak-linked
+          cat > /tmp/patch_weak.py << 'PYEOF'
+import struct, sys
+
+def patch_weak(filepath, substring):
+    with open(filepath, 'rb') as f:
+        data = bytearray(f.read())
+
+    LC_LOAD_DYLIB      = 0x0000000C
+    LC_LOAD_WEAK_DYLIB = 0x80000018
+    FAT_MAGIC          = 0xCAFEBABE
+
+    magic = struct.unpack_from('>I', data, 0)[0]
+    offsets = []
+    if magic == FAT_MAGIC:
+        nfat = struct.unpack_from('>I', data, 4)[0]
+        for i in range(nfat):
+            offsets.append(struct.unpack_from('>I', data, 8 + i*20)[0])
+    else:
+        offsets = [0]
+
+    patched = False
+    for base in offsets:
+        mh = struct.unpack_from('<I', data, base)[0]
+        if mh not in (0xFEEDFACF, 0xCFFAEDFE):
+            continue
+        ncmds = struct.unpack_from('<I', data, base + 16)[0]
+        pos = base + 32
+        for _ in range(ncmds):
+            cmd = struct.unpack_from('<I', data, pos)[0]
+            csz = struct.unpack_from('<I', data, pos + 4)[0]
+            if cmd == LC_LOAD_DYLIB:
+                noff = struct.unpack_from('<I', data, pos + 8)[0]
+                np = pos + noff
+                ne = np
+                while ne < pos + csz and data[ne]:
+                    ne += 1
+                name = data[np:ne].decode('utf-8', errors='replace')
+                if substring in name:
+                    print(f'Patching: {name} -> LC_LOAD_WEAK_DYLIB')
+                    struct.pack_into('<I', data, pos, LC_LOAD_WEAK_DYLIB)
+                    patched = True
+            pos += csz
+
+    if patched:
+        with open(filepath, 'wb') as f:
+            f.write(data)
+        print(f'Saved: {filepath}')
+    else:
+        print(f'Not found in {filepath}: {substring}')
+
+patch_weak(sys.argv[1], sys.argv[2])
+PYEOF
+
+          # Apply weak-link patch to libXCTestSwiftSupport
           SWIFT_SUPPORT="$APP/Frameworks/libXCTestSwiftSupport.dylib"
-          echo "Patching libXCTestSwiftSupport..."
-          
-          # Change _Testing_Foundation from required to weak by removing it
-          # and replacing with a path that won't crash if missing
-          install_name_tool -change \
-            "@rpath/_Testing_Foundation.framework/_Testing_Foundation" \
-            "/usr/lib/swift/_Testing_Foundation.framework/_Testing_Foundation" \
-            "$SWIFT_SUPPORT" 2>/dev/null || true
+          echo "Patching _Testing_Foundation to weak in libXCTestSwiftSupport..."
+          python3 /tmp/patch_weak.py "$SWIFT_SUPPORT" "_Testing_Foundation"
 
-          echo "libXCTestSwiftSupport deps after patch:"
-          otool -L "$SWIFT_SUPPORT" | grep -i "testing_foundation"
+          # Verify patch
+          echo "Verifying patch:"
+          otool -l "$SWIFT_SUPPORT" | grep -A4 "Testing_Foundation" | head -10
 
-          # Find and bundle _Testing_Foundation.framework
-          echo "=== Searching for _Testing_Foundation.framework ==="
-          find /Applications/Xcode.app -name "_Testing_Foundation.framework" 2>/dev/null | head -5
-
-          TF=$(find /Applications/Xcode.app -name "_Testing_Foundation.framework" \
-            -path "*iPhoneOS*" 2>/dev/null | head -1)
-
-          if [ -z "$TF" ]; then
-            TF=$(find /Applications/Xcode.app -name "_Testing_Foundation.framework" \
-              2>/dev/null | head -1)
-          fi
-
-          if [ -n "$TF" ]; then
-            echo "Found _Testing_Foundation at: $TF"
-            cp -r "$TF" "$APP/Frameworks/"
-            echo "Bundled _Testing_Foundation.framework"
-          else
-            echo "WARNING: _Testing_Foundation.framework not found"
-          fi
-
-          echo "Frameworks after bundling:"
+          echo "Frameworks:"
           ls "$APP/Frameworks/"
-
-      - name: Diagnose library
-        script: |
-          LIB="/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/lib/lib_TestingInterop.dylib"
-          echo "=== lib_TestingInterop architecture ==="
-          file "$LIB"
-          echo "=== lib_TestingInterop dependencies ==="
-          otool -L "$LIB"
-          APP="./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
-          echo "=== Main binary dependencies ==="
-          otool -L "$APP/WebDriverAgentRunner-Runner"
-          echo "=== Testing.framework dependencies ==="
-          otool -L "$APP/Frameworks/Testing.framework/Testing"
-          echo "=== XCTestCore dependencies ==="
-          otool -L "$APP/Frameworks/XCTestCore.framework/XCTestCore"
-          echo "=== libXCTestSwiftSupport dependencies ==="
-          otool -L "$APP/Frameworks/libXCTestSwiftSupport.dylib" 2>/dev/null || echo "not found"
 
       - name: Sign with developer certificate
         script: |
@@ -138,17 +151,17 @@ workflows:
           print('Entitlements written')
           "
 
-          # Sign all dylibs everywhere WITHOUT entitlements
+          # Sign all dylibs WITHOUT entitlements
           find "$APP" -name "*.dylib" | while read f; do
             codesign --force --sign "$CERT" "$f" 2>/dev/null || true
           done
 
-          # Sign frameworks in main Frameworks folder WITHOUT entitlements
+          # Sign frameworks in Frameworks WITHOUT entitlements
           find "$APP/Frameworks" -maxdepth 1 -name "*.framework" | while read f; do
             codesign --force --sign "$CERT" "$f" 2>/dev/null || true
           done
 
-          # Sign frameworks inside xctest plugins WITHOUT entitlements
+          # Sign frameworks inside xctest WITHOUT entitlements
           find "$APP/PlugIns" -name "*.framework" | while read f; do
             codesign --force --sign "$CERT" "$f" 2>/dev/null || true
           done
