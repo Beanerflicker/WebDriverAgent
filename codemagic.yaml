@@ -30,6 +30,26 @@ workflows:
             CODE_SIGNING_REQUIRED=NO \
             PRODUCT_BUNDLE_IDENTIFIER=com.beanerflicker.WebDriverAgentRunner
 
+      - name: Bundle missing library
+        script: |
+          APP="./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
+
+          LIB="/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/lib/lib_TestingInterop.dylib"
+          echo "Library exists: $(test -f "$LIB" && echo YES || echo NO)"
+
+          cp "$LIB" "$APP/Frameworks/"
+          echo "Copied lib_TestingInterop.dylib"
+
+          TESTING="$APP/Frameworks/Testing.framework/Testing"
+          install_name_tool -change \
+            "@rpath/lib_TestingInterop.dylib" \
+            "@loader_path/../lib_TestingInterop.dylib" \
+            "$TESTING" 2>/dev/null || true
+
+          echo "Patch applied"
+          echo "Frameworks:"
+          ls "$APP/Frameworks/"
+
       - name: Sign with developer certificate
         script: |
           APP="./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
