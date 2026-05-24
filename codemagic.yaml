@@ -14,41 +14,19 @@ workflows:
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner
 
-      - name: Find profile UUIDs
-        script: |
-          for f in ~/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision; do
-            PLIST=$(security cms -D -i "$f")
-            NAME=$(echo "$PLIST" | grep -A1 "<key>Name</key>" \
-              | grep string | sed 's/.*<string>//;s/<\/string>//')
-            UUID=$(echo "$PLIST" | grep -A1 "<key>UUID</key>" \
-              | grep string | sed 's/.*<string>//;s/<\/string>//')
-            APP_ID=$(echo "$PLIST" | grep -A1 "application-identifier" \
-              | grep string | sed 's/.*<string>//;s/<\/string>//')
-            echo "Name: $NAME | UUID: $UUID | AppID: $APP_ID"
-          done
-
       - name: Build and Sign
         script: |
           TEAM_ID="34QXW692J2"
+          RUNNER_UUID="578b3d42-a00d-4e72-8559-afe0a01e7473"
 
-          # Find xctrunner profile UUID
-          RUNNER_UUID=""
-          for f in ~/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision; do
-            PLIST=$(security cms -D -i "$f")
-            APP_ID=$(echo "$PLIST" | grep -A1 "application-identifier" \
-              | grep string | sed 's/.*<string>//;s/<\/string>//')
-            UUID=$(echo "$PLIST" | grep -A1 "<key>UUID</key>" \
-              | grep string | sed 's/.*<string>//;s/<\/string>//')
-            if echo "$APP_ID" | grep -q "xctrunner"; then
-              RUNNER_UUID=$UUID
-              echo "Runner UUID: $RUNNER_UUID"
-            fi
-          done
-
-          if [ -z "$RUNNER_UUID" ]; then
-            echo "ERROR: xctrunner profile not found"
-            exit 1
-          fi
+          # Create xcconfig to force WebDriverAgentLib to Automatic signing
+          cat > /tmp/lib_signing.xcconfig << 'EOF'
+          CODE_SIGN_STYLE = Automatic
+          CODE_SIGN_IDENTITY = Apple Development
+          PROVISIONING_PROFILE =
+          PROVISIONING_PROFILE_SPECIFIER =
+          DEVELOPMENT_TEAM = 34QXW692J2
+          EOF
 
           xcodebuild \
             -project WebDriverAgent.xcodeproj \
@@ -57,15 +35,12 @@ workflows:
             -sdk iphoneos \
             -arch arm64 \
             -derivedDataPath ./build \
+            -xcconfig /tmp/lib_signing.xcconfig \
             DEVELOPMENT_TEAM=$TEAM_ID \
             CODE_SIGN_IDENTITY="Apple Development" \
             CODE_SIGN_STYLE=Manual \
             PRODUCT_BUNDLE_IDENTIFIER=com.beanerflicker.WebDriverAgentRunner \
-            PROVISIONING_PROFILE=$RUNNER_UUID \
-            WEBDRIVERAGENTLIB_PROVISIONING_PROFILE="" \
-            WEBDRIVERAGENTLIB_CODE_SIGN_STYLE=Automatic \
-            WEBDRIVERAGENTLIB_DEVELOPMENT_TEAM=$TEAM_ID \
-            WEBDRIVERAGENTLIB_CODE_SIGN_IDENTITY="Apple Development"
+            PROVISIONING_PROFILE=$RUNNER_UUID
 
       - name: Package IPA
         script: |
