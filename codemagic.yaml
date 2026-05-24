@@ -6,7 +6,7 @@ workflows:
       xcode: 26.4
       ios_signing:
         distribution_type: development
-        bundle_identifier: com.beanerflicker.wda
+        bundle_identifier: com.beanerflicker.WebDriverAgentRunner
     scripts:
       - name: Resolve packages
         script: |
@@ -14,39 +14,39 @@ workflows:
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner
 
-      - name: Show signing assets
+      - name: Find profile UUIDs
         script: |
-          echo "=== Certificates ==="
-          security find-identity -v -p codesigning
-
-          echo "=== Provisioning Profiles ==="
-          for f in ~/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision; do
-            echo "--- $(basename $f) ---"
-            security cms -D -i "$f" | grep -A1 "UUID\|<key>Name\|TeamIdentifier\|application-identifier" | head -20
-            echo ""
-          done
-
-      - name: Build and Sign
-        script: |
-          TEAM_ID="34QXW692J2"
-
-          # Find Runner profile UUID
-          RUNNER_UUID=""
           for f in ~/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision; do
             PLIST=$(security cms -D -i "$f")
             NAME=$(echo "$PLIST" | grep -A1 "<key>Name</key>" \
               | grep string | sed 's/.*<string>//;s/<\/string>//')
             UUID=$(echo "$PLIST" | grep -A1 "<key>UUID</key>" \
               | grep string | sed 's/.*<string>//;s/<\/string>//')
-            echo "Found profile: $NAME -> $UUID"
-            if echo "$NAME" | grep -qi "runner"; then
+            APP_ID=$(echo "$PLIST" | grep -A1 "application-identifier" \
+              | grep string | sed 's/.*<string>//;s/<\/string>//')
+            echo "Name: $NAME | UUID: $UUID | AppID: $APP_ID"
+          done
+
+      - name: Build and Sign
+        script: |
+          TEAM_ID="34QXW692J2"
+
+          # Find xctrunner profile UUID
+          RUNNER_UUID=""
+          for f in ~/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision; do
+            PLIST=$(security cms -D -i "$f")
+            APP_ID=$(echo "$PLIST" | grep -A1 "application-identifier" \
+              | grep string | sed 's/.*<string>//;s/<\/string>//')
+            UUID=$(echo "$PLIST" | grep -A1 "<key>UUID</key>" \
+              | grep string | sed 's/.*<string>//;s/<\/string>//')
+            if echo "$APP_ID" | grep -q "xctrunner"; then
               RUNNER_UUID=$UUID
-              echo "Using Runner profile: $NAME ($UUID)"
+              echo "Runner UUID: $RUNNER_UUID"
             fi
           done
 
           if [ -z "$RUNNER_UUID" ]; then
-            echo "ERROR: Could not find WDA Runner Development profile"
+            echo "ERROR: xctrunner profile not found"
             exit 1
           fi
 
@@ -60,6 +60,7 @@ workflows:
             DEVELOPMENT_TEAM=$TEAM_ID \
             CODE_SIGN_IDENTITY="Apple Development" \
             CODE_SIGN_STYLE=Manual \
+            PRODUCT_BUNDLE_IDENTIFIER=com.beanerflicker.WebDriverAgentRunner \
             PROVISIONING_PROFILE=$RUNNER_UUID \
             WEBDRIVERAGENTLIB_PROVISIONING_PROFILE="" \
             WEBDRIVERAGENTLIB_CODE_SIGN_STYLE=Automatic \
