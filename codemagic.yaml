@@ -14,14 +14,26 @@ workflows:
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner
 
-      - name: Get Team ID
+      - name: Get signing info
         script: |
+          # Get Team ID
           TEAM_ID=$(security find-identity -v -p codesigning \
-            | grep -o '([A-Z0-9]\{10\})' \
+            | grep "Apple Development\|iPhone Developer" \
             | head -1 \
+            | grep -o '([A-Z0-9]\{10\})' \
             | tr -d '()')
-          echo "Team ID found: $TEAM_ID"
-          echo "TEAM_ID=$TEAM_ID" >> $CM_ENV
+          echo "Team ID: $TEAM_ID"
+
+          # Get provisioning profile UUID
+          PROFILE_PATH=$(find ~/Library/MobileDevice/Provisioning\ Profiles \
+            -name "*.mobileprovision" | head -1)
+          echo "Profile path: $PROFILE_PATH"
+          UUID=$(/usr/libexec/PlistBuddy -c "Print UUID" \
+            /dev/stdin <<< $(security cms -D -i "$PROFILE_PATH"))
+          echo "Profile UUID: $UUID"
+
+          echo "TEAM_ID=$TEAM_ID"   >> $CM_ENV
+          echo "PROFILE_UUID=$UUID" >> $CM_ENV
 
       - name: Build and Sign
         script: |
@@ -35,8 +47,11 @@ workflows:
             DEVELOPMENT_TEAM=$TEAM_ID \
             PRODUCT_BUNDLE_IDENTIFIER=com.beanerflicker.wda \
             CODE_SIGN_STYLE=Manual \
-            PROVISIONING_PROFILE_SPECIFIER="WDA Development" \
-            CODE_SIGN_IDENTITY="Apple Development"
+            PROVISIONING_PROFILE=$PROFILE_UUID \
+            CODE_SIGN_IDENTITY="Apple Development" \
+            WEBDRIVERAGENTLIB_DEVELOPMENT_TEAM=$TEAM_ID \
+            WEBDRIVERAGENTLIB_CODE_SIGN_STYLE=Automatic \
+            "WEBDRIVERAGENTLIB_CODE_SIGN_IDENTITY=Apple Development"
 
       - name: Package IPA
         script: |
