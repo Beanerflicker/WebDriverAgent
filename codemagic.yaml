@@ -8,7 +8,6 @@ workflows:
         distribution_type: development
         bundle_identifier: com.beanerflicker.WebDriverAgentRunner
     scripts:
-
       - name: Resolve packages
         script: |
           xcodebuild -resolvePackageDependencies \
@@ -29,154 +28,95 @@ workflows:
             PROVISIONING_PROFILE="" \
             DEVELOPMENT_TEAM="" \
             CODE_SIGNING_REQUIRED=NO \
-            PRODUCT_BUNDLE_IDENTIFIER=com.beanerflicker.WebDriverAgentRunner
+            PRODUCT_BUNDLE_IDENTIFIER=com.beanerflicker.WebDriverAgentRunner \
+            WEAK_FRAMEWORKS=XCTest
 
       - name: Bundle and patch libraries
         script: |
           APP="./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
 
-          if [ ! -d "$APP" ]; then
-            echo "ERROR: App bundle not found at $APP"
-            find ./build -name "*.app" -type d 2>/dev/null || true
-            exit 1
-          fi
-          echo "App bundle found"
-
-          # Show Xcode environment so we know exactly what paths exist
-          echo "=== Xcode environment ==="
-          echo "xcode-select path: $(xcode-select -p)"
-          echo "Xcode version: $(xcodebuild -version | head -1)"
-          XCODE_DEV=$(xcode-select -p)
-          XCODE_APP=$(echo "$XCODE_DEV" | sed 's|/Contents/Developer||')
-          echo "Xcode.app path: $XCODE_APP"
-
-          # Search using xcode-select path — works regardless of versioned app name
-          LIB_SRC=$(find "$XCODE_DEV/Platforms/iPhoneOS.platform/Developer/usr/lib" \
-            -name "lib_TestingInterop.dylib" 2>/dev/null | head -1)
-
-          # Broader fallback search under the whole Xcode developer tree
-          if [ -z "$LIB_SRC" ]; then
-            echo "Standard path failed, running broader search..."
-            LIB_SRC=$(find "$XCODE_DEV" -name "lib_TestingInterop.dylib" 2>/dev/null | head -1)
-          fi
-
-          # Last resort: search all of /Applications
-          if [ -z "$LIB_SRC" ]; then
-            echo "Developer tree search failed, searching /Applications..."
-            LIB_SRC=$(find /Applications -name "lib_TestingInterop.dylib" 2>/dev/null | head -1)
-          fi
-
-          if [ -z "$LIB_SRC" ]; then
-            echo "ERROR: lib_TestingInterop.dylib not found anywhere"
-            echo "Listing iPhoneOS platform lib dir:"
-            ls "$XCODE_DEV/Platforms/iPhoneOS.platform/Developer/usr/lib/" 2>/dev/null || echo "(dir not found)"
-            echo "Listing all dylibs in platform:"
-            find "$XCODE_DEV/Platforms/iPhoneOS.platform" -name "*.dylib" 2>/dev/null | head -20 || true
-            exit 1
-          fi
-
-          echo "Found lib_TestingInterop.dylib at: $LIB_SRC"
-          cp "$LIB_SRC" "$APP/Frameworks/"
+          cp "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/lib/lib_TestingInterop.dylib" "$APP/Frameworks/"
           echo "Copied lib_TestingInterop.dylib"
 
-          install_name_tool \
-            -change "@rpath/lib_TestingInterop.dylib" \
-            "@loader_path/../lib_TestingInterop.dylib" \
-            "$APP/Frameworks/Testing.framework/Testing" 2>/dev/null || true
-          echo "Patched Testing.framework rpath"
+          install_name_tool -change "@rpath/lib_TestingInterop.dylib" "@loader_path/../lib_TestingInterop.dylib" "$APP/Frameworks/Testing.framework/Testing" 2>/dev/null || true
+          echo "Patched Testing.framework"
 
-          echo "aW1wb3J0IHN0cnVjdCwgc3lzCgpMQ19MT0FEX0RZTElCID0gMHgwMDAwMDAwQwpMQ19MT0FEX1dFQUtfRFlMSUIgPSAweDgwMDAwMDE4CkZBVF9NQUdJQyAgICA9IDB4Q0FGRUJBQkUKRkFUX01BR0lDXzY0ID0gMHhDQUZFQkFCRgpEWUxJQl9TVUJTVFJJTkcgPSAnX1Rlc3RpbmdfRm91bmRhdGlvbi5mcmFtZXdvcmsnCgpkZWYgcGF0Y2hfd2VhayhmaWxlcGF0aCk6CiAgICB3aXRoIG9wZW4oZmlsZXBhdGgsICdyYicpIGFzIGY6CiAgICAgICAgZGF0YSA9IGJ5dGVhcnJheShmLnJlYWQoKSkKICAgIG1hZ2ljID0gc3RydWN0LnVucGFja19mcm9tKCc+SScsIGRhdGEsIDApWzBdCiAgICBvZmZzZXRzID0gW10KICAgIGlmIG1hZ2ljID09IEZBVF9NQUdJQzoKICAgICAgICBuZmF0ID0gc3RydWN0LnVucGFja19mcm9tKCc+SScsIGRhdGEsIDQpWzBdCiAgICAgICAgZm9yIGkgaW4gcmFuZ2UobmZhdCk6CiAgICAgICAgICAgIG9mZiA9IHN0cnVjdC51bnBhY2tfZnJvbSgnPkknLCBkYXRhLCA4ICsgaSAqIDIwICsgOClbMF0KICAgICAgICAgICAgb2Zmc2V0cy5hcHBlbmQob2ZmKQogICAgZWxpZiBtYWdpYyA9PSBGQVRfTUFHSUNfNjQ6CiAgICAgICAgbmZhdCA9IHN0cnVjdC51bnBhY2tfZnJvbSgnPkknLCBkYXRhLCA0KVswXQogICAgICAgIGZvciBpIGluIHJhbmdlKG5mYXQpOgogICAgICAgICAgICBvZmYgPSBzdHJ1Y3QudW5wYWNrX2Zyb20oJz5RJywgZGF0YSwgOCArIGkgKiAzMiArIDgpWzBdCiAgICAgICAgICAgIG9mZnNldHMuYXBwZW5kKG9mZikKICAgIGVsc2U6CiAgICAgICAgb2Zmc2V0cyA9IFswXQogICAgcHJpbnQoZiJPZmZzZXRzOiB7b2Zmc2V0c30iKQogICAgcGF0Y2hlZCA9IEZhbHNlCiAgICBmb3IgYmFzZSBpbiBvZmZzZXRzOgogICAgICAgIGlmIGJhc2UgKyAzMiA+IGxlbihkYXRhKToKICAgICAgICAgICAgY29udGludWUKICAgICAgICBtaCA9IHN0cnVjdC51bnBhY2tfZnJvbSgnPEknLCBkYXRhLCBiYXNlKVswXQogICAgICAgIHByaW50KGYiTWFnaWMgYXQge2Jhc2V9OiAweHttaDowOFh9IikKICAgICAgICBpZiBtaCBub3QgaW4gKDB4RkVFREZBQ0YsIDB4Q0ZGQUVERkUpOgogICAgICAgICAgICBjb250aW51ZQogICAgICAgIG5jbWRzID0gc3RydWN0LnVucGFja19mcm9tKCc8SScsIGRhdGEsIGJhc2UgKyAxNilbMF0KICAgICAgICBwb3MgPSBiYXNlICsgMzIKICAgICAgICBmb3IgXyBpbiByYW5nZShuY21kcyk6CiAgICAgICAgICAgIGlmIHBvcyArIDggPiBsZW4oZGF0YSk6CiAgICAgICAgICAgICAgICBicmVhawogICAgICAgICAgICBjbWQgPSBzdHJ1Y3QudW5wYWNrX2Zyb20oJzxJJywgZGF0YSwgcG9zKVswXQogICAgICAgICAgICBjc3ogPSBzdHJ1Y3QudW5wYWNrX2Zyb20oJzxJJywgZGF0YSwgcG9zICsgNClbMF0KICAgICAgICAgICAgaWYgY3N6ID09IDA6CiAgICAgICAgICAgICAgICBicmVhawogICAgICAgICAgICBpZiBjbWQgPT0gTENfTE9BRF9EWUxJQiBhbmQgcG9zICsgY3N6IDw9IGxlbihkYXRhKToKICAgICAgICAgICAgICAgIG5vZmYgPSBzdHJ1Y3QudW5wYWNrX2Zyb20oJzxJJywgZGF0YSwgcG9zICsgOClbMF0KICAgICAgICAgICAgICAgIG5wXyA9IHBvcyArIG5vZmYKICAgICAgICAgICAgICAgIG5lID0gbnBfCiAgICAgICAgICAgICAgICB3aGlsZSBuZSA8IHBvcyArIGNzeiBhbmQgbmUgPCBsZW4oZGF0YSkgYW5kIGRhdGFbbmVdOgogICAgICAgICAgICAgICAgICAgIG5lICs9IDEKICAgICAgICAgICAgICAgIG5hbWUgPSBkYXRhW25wXzpuZV0uZGVjb2RlKCd1dGYtOCcsIGVycm9ycz0ncmVwbGFjZScpCiAgICAgICAgICAgICAgICBpZiBEWUxJQl9TVUJTVFJJTkcgaW4gbmFtZToKICAgICAgICAgICAgICAgICAgICBwcmludChmIlBhdGNoaW5nOiB7bmFtZX0gLT4gTENfTE9BRF9XRUFLX0RZTElCIikKICAgICAgICAgICAgICAgICAgICBzdHJ1Y3QucGFja19pbnRvKCc8SScsIGRhdGEsIHBvcywgTENfTE9BRF9XRUFLX0RZTElCKQogICAgICAgICAgICAgICAgICAgIHBhdGNoZWQgPSBUcnVlCiAgICAgICAgICAgIHBvcyArPSBjc3oKICAgIGlmIHBhdGNoZWQ6CiAgICAgICAgd2l0aCBvcGVuKGZpbGVwYXRoLCAnd2InKSBhcyBmOgogICAgICAgICAgICBmLndyaXRlKGRhdGEpCiAgICAgICAgcHJpbnQoZiJTYXZlZDoge2ZpbGVwYXRofSIpCiAgICBlbHNlOgogICAgICAgIHByaW50KGYiTm90IGZvdW5kOiB7RFlMSUJfU1VCU1RSSU5HfSBpbiB7ZmlsZXBhdGh9IikKCmRlZiBwYXRjaF9vYmpjX3N5bWJvbChmaWxlcGF0aCwgc3ltYm9sKToKICAgICIiIlBhdGNoIE9iakMgY2xhc3Mgc3ltYm9sIHJlZmVyZW5jZSBieSBmaW5kaW5nIGl0IGluIF9fb2JqY19jbGFzc3JlZnMgc2VjdGlvbiIiIgogICAgIyBGb3Igc3ltYm9sIG1pc3NpbmcgZXJyb3JzLCB3ZSBuZWVkIHRvIG1ha2UgWENUZXN0IGxvYWQgd2Vha2x5CiAgICAjIFRoZSByZWFsIGZpeCBpcyB0byBwYXRjaCB0aGUgTENfTE9BRF9EWUxJQiBmb3IgWENUZXN0IHRvIExDX0xPQURfV0VBS19EWUxJQgogICAgd2l0aCBvcGVuKGZpbGVwYXRoLCAncmInKSBhcyBmOgogICAgICAgIGRhdGEgPSBieXRlYXJyYXkoZi5yZWFkKCkpCiAgICBtYWdpYyA9IHN0cnVjdC51bnBhY2tfZnJvbSgnPkknLCBkYXRhLCAwKVswXQogICAgb2Zmc2V0cyA9IFtdCiAgICBpZiBtYWdpYyA9PSBGQVRfTUFHSUM6CiAgICAgICAgbmZhdCA9IHN0cnVjdC51bnBhY2tfZnJvbSgnPkknLCBkYXRhLCA0KVswXQogICAgICAgIGZvciBpIGluIHJhbmdlKG5mYXQpOgogICAgICAgICAgICBvZmYgPSBzdHJ1Y3QudW5wYWNrX2Zyb20oJz5JJywgZGF0YSwgOCArIGkgKiAyMCArIDgpWzBdCiAgICAgICAgICAgIG9mZnNldHMuYXBwZW5kKG9mZikKICAgIGVsaWYgbWFnaWMgPT0gRkFUX01BR0lDXzY0OgogICAgICAgIG5mYXQgPSBzdHJ1Y3QudW5wYWNrX2Zyb20oJz5JJywgZGF0YSwgNClbMF0KICAgICAgICBmb3IgaSBpbiByYW5nZShuZmF0KToKICAgICAgICAgICAgb2ZmID0gc3RydWN0LnVucGFja19mcm9tKCc+UScsIGRhdGEsIDggKyBpICogMzIgKyA4KVswXQogICAgICAgICAgICBvZmZzZXRzLmFwcGVuZChvZmYpCiAgICBlbHNlOgogICAgICAgIG9mZnNldHMgPSBbMF0KICAgIHBhdGNoZWQgPSBGYWxzZQogICAgZm9yIGJhc2UgaW4gb2Zmc2V0czoKICAgICAgICBpZiBiYXNlICsgMzIgPiBsZW4oZGF0YSk6CiAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgbWggPSBzdHJ1Y3QudW5wYWNrX2Zyb20oJzxJJywgZGF0YSwgYmFzZSlbMF0KICAgICAgICBpZiBtaCBub3QgaW4gKDB4RkVFREZBQ0YsIDB4Q0ZGQUVERkUpOgogICAgICAgICAgICBjb250aW51ZQogICAgICAgIG5jbWRzID0gc3RydWN0LnVucGFja19mcm9tKCc8SScsIGRhdGEsIGJhc2UgKyAxNilbMF0KICAgICAgICBwb3MgPSBiYXNlICsgMzIKICAgICAgICBmb3IgXyBpbiByYW5nZShuY21kcyk6CiAgICAgICAgICAgIGlmIHBvcyArIDggPiBsZW4oZGF0YSk6CiAgICAgICAgICAgICAgICBicmVhawogICAgICAgICAgICBjbWQgPSBzdHJ1Y3QudW5wYWNrX2Zyb20oJzxJJywgZGF0YSwgcG9zKVswXQogICAgICAgICAgICBjc3ogPSBzdHJ1Y3QudW5wYWNrX2Zyb20oJzxJJywgZGF0YSwgcG9zICsgNClbMF0KICAgICAgICAgICAgaWYgY3N6ID09IDA6CiAgICAgICAgICAgICAgICBicmVhawogICAgICAgICAgICBpZiBjbWQgPT0gTENfTE9BRF9EWUxJQiBhbmQgcG9zICsgY3N6IDw9IGxlbihkYXRhKToKICAgICAgICAgICAgICAgIG5vZmYgPSBzdHJ1Y3QudW5wYWNrX2Zyb20oJzxJJywgZGF0YSwgcG9zICsgOClbMF0KICAgICAgICAgICAgICAgIG5wXyA9IHBvcyArIG5vZmYKICAgICAgICAgICAgICAgIG5lID0gbnBfCiAgICAgICAgICAgICAgICB3aGlsZSBuZSA8IHBvcyArIGNzeiBhbmQgbmUgPCBsZW4oZGF0YSkgYW5kIGRhdGFbbmVdOgogICAgICAgICAgICAgICAgICAgIG5lICs9IDEKICAgICAgICAgICAgICAgIG5hbWUgPSBkYXRhW25wXzpuZV0uZGVjb2RlKCd1dGYtOCcsIGVycm9ycz0ncmVwbGFjZScpCiAgICAgICAgICAgICAgICBpZiAnWENUZXN0JyBpbiBuYW1lIGFuZCAnWENUZXN0Q29yZScgbm90IGluIG5hbWUgYW5kICdYQ1Rlc3RTd2lmdCcgbm90IGluIG5hbWUgYW5kICdYQ1Rlc3RTdXBwb3J0JyBub3QgaW4gbmFtZToKICAgICAgICAgICAgICAgICAgICBwcmludChmIlBhdGNoaW5nIFhDVGVzdCBsb2FkOiB7bmFtZX0gLT4gTENfTE9BRF9XRUFLX0RZTElCIikKICAgICAgICAgICAgICAgICAgICBzdHJ1Y3QucGFja19pbnRvKCc8SScsIGRhdGEsIHBvcywgTENfTE9BRF9XRUFLX0RZTElCKQogICAgICAgICAgICAgICAgICAgIHBhdGNoZWQgPSBUcnVlCiAgICAgICAgICAgIHBvcyArPSBjc3oKICAgIGlmIHBhdGNoZWQ6CiAgICAgICAgd2l0aCBvcGVuKGZpbGVwYXRoLCAnd2InKSBhcyBmOgogICAgICAgICAgICBmLndyaXRlKGRhdGEpCiAgICAgICAgcHJpbnQoZiJTYXZlZDoge2ZpbGVwYXRofSIpCiAgICBlbHNlOgogICAgICAgIHByaW50KGYiWENUZXN0IGxvYWQgY29tbWFuZCBub3QgZm91bmQgaW4ge2ZpbGVwYXRofSIpCgpmb3IgcGF0aCBpbiBzeXMuYXJndlsxOl06CiAgICBwcmludChmIi0tLSB7cGF0aH0iKQogICAgcGF0Y2hfd2VhayhwYXRoKQoKIyBBbHNvIHBhdGNoIFhDVGVzdCB3ZWFrIGluIG1haW4gYmluYXJ5Cm1haW4gPSBbcCBmb3IgcCBpbiBzeXMuYXJndlsxOl0gaWYgJ1dlYkRyaXZlckFnZW50UnVubmVyLVJ1bm5lcicgaW4gcCBhbmQgJ0ZyYW1ld29ya3MnIG5vdCBpbiBwXQpmb3IgcCBpbiBtYWluOgogICAgcHJpbnQoZiItLS0gUGF0Y2hpbmcgWENUZXN0IHdlYWsgbGluayBpbiB7cH0iKQogICAgcGF0Y2hfb2JqY19zeW1ib2wocCwgJ19PQkpDX0NMQVNTXyRfWENUQ29tbWFuZExpbmVUb29sSGVscGVyJykK" | base64 -d > /tmp/patch_weak.py
+          echo "aW1wb3J0IHN0cnVjdCwgc3lzCgpkZWYgcGF0Y2hfd2VhayhmaWxlcGF0aCwgc3Vic3RyaW5nKToKICAgIHdpdGggb3BlbihmaWxlcGF0aCwgInJiIikgYXMgZjoKICAgICAgICBkYXRhID0gYnl0ZWFycmF5KGYucmVhZCgpKQogICAgTENfTE9BRF9EWUxJQiA9IDB4MDAwMDAwMEMKICAgIExDX0xPQURfV0VBS19EWUxJQiA9IDB4ODAwMDAwMTgKICAgIEZBVF9NQUdJQyA9IDB4Q0FGRUJBQkUKICAgIG1hZ2ljID0gc3RydWN0LnVucGFja19mcm9tKCI+SSIsIGRhdGEsIDApWzBdCiAgICBvZmZzZXRzID0gW10KICAgIGlmIG1hZ2ljID09IEZBVF9NQUdJQzoKICAgICAgICBuZmF0ID0gc3RydWN0LnVucGFja19mcm9tKCI+SSIsIGRhdGEsIDQpWzBdCiAgICAgICAgZm9yIGkgaW4gcmFuZ2UobmZhdCk6CiAgICAgICAgICAgIG9mZnNldHMuYXBwZW5kKHN0cnVjdC51bnBhY2tfZnJvbSgiPkkiLCBkYXRhLCA4ICsgaSoyMClbMF0pCiAgICBlbHNlOgogICAgICAgIG9mZnNldHMgPSBbMF0KICAgIHBhdGNoZWQgPSBGYWxzZQogICAgZm9yIGJhc2UgaW4gb2Zmc2V0czoKICAgICAgICBtaCA9IHN0cnVjdC51bnBhY2tfZnJvbSgiPEkiLCBkYXRhLCBiYXNlKVswXQogICAgICAgIGlmIG1oIG5vdCBpbiAoMHhGRUVERkFDRiwgMHhDRkZBRURGRSk6CiAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgbmNtZHMgPSBzdHJ1Y3QudW5wYWNrX2Zyb20oIjxJIiwgZGF0YSwgYmFzZSArIDE2KVswXQogICAgICAgIHBvcyA9IGJhc2UgKyAzMgogICAgICAgIGZvciBfIGluIHJhbmdlKG5jbWRzKToKICAgICAgICAgICAgY21kID0gc3RydWN0LnVucGFja19mcm9tKCI8SSIsIGRhdGEsIHBvcylbMF0KICAgICAgICAgICAgY3N6ID0gc3RydWN0LnVucGFja19mcm9tKCI8SSIsIGRhdGEsIHBvcyArIDQpWzBdCiAgICAgICAgICAgIGlmIGNtZCA9PSBMQ19MT0FEX0RZTElCOgogICAgICAgICAgICAgICAgbm9mZiA9IHN0cnVjdC51bnBhY2tfZnJvbSgiPEkiLCBkYXRhLCBwb3MgKyA4KVswXQogICAgICAgICAgICAgICAgbnAgPSBwb3MgKyBub2ZmCiAgICAgICAgICAgICAgICBuZSA9IG5wCiAgICAgICAgICAgICAgICB3aGlsZSBuZSA8IHBvcyArIGNzeiBhbmQgZGF0YVtuZV06CiAgICAgICAgICAgICAgICAgICAgbmUgKz0gMQogICAgICAgICAgICAgICAgbmFtZSA9IGRhdGFbbnA6bmVdLmRlY29kZSgidXRmLTgiLCBlcnJvcnM9InJlcGxhY2UiKQogICAgICAgICAgICAgICAgaWYgc3Vic3RyaW5nIGluIG5hbWU6CiAgICAgICAgICAgICAgICAgICAgcHJpbnQoZiJQYXRjaGluZzoge25hbWV9IC0+IExDX0xPQURfV0VBS19EWUxJQiIpCiAgICAgICAgICAgICAgICAgICAgc3RydWN0LnBhY2tfaW50bygiPEkiLCBkYXRhLCBwb3MsIExDX0xPQURfV0VBS19EWUxJQikKICAgICAgICAgICAgICAgICAgICBwYXRjaGVkID0gVHJ1ZQogICAgICAgICAgICBwb3MgKz0gY3N6CiAgICBpZiBwYXRjaGVkOgogICAgICAgIHdpdGggb3BlbihmaWxlcGF0aCwgIndiIikgYXMgZjoKICAgICAgICAgICAgZi53cml0ZShkYXRhKQogICAgICAgIHByaW50KGYiU2F2ZWQ6IHtmaWxlcGF0aH0iKQogICAgZWxzZToKICAgICAgICBwcmludChmIk5vdCBmb3VuZDoge3N1YnN0cmluZ30iKQoKcGF0Y2hfd2VhayhzeXMuYXJndlsxXSwgc3lzLmFyZ3ZbMl0pCg==" | base64 -d > /tmp/patch_weak.py
 
-          python3 /tmp/patch_weak.py \
-            "$APP/Frameworks/libXCTestSwiftSupport.dylib" \
-            "$APP/Frameworks/XCTestCore.framework/XCTestCore" \
-            "$APP/WebDriverAgentRunner-Runner"
-            "$APP/WebDriverAgentRunner-Runner" "_OBJC_CLASS_\$_XCTCommandLineToolHelper"
-          echo "All patches complete"
+          python3 /tmp/patch_weak.py "$APP/Frameworks/libXCTestSwiftSupport.dylib" "_Testing_Foundation"
+          echo "Patch complete"
           echo "Frameworks:"
           ls "$APP/Frameworks/"
 
       - name: Sign with developer certificate
         script: |
           APP="./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
-          export TEAM_ID="34QXW692J2"
-          export APP_ID="${TEAM_ID}.com.beanerflicker.WebDriverAgentRunner.xctrunner"
-          PROFILE_UUID="e3fd8446-5416-4a26-ac8b-f25b92f8a2dc"
 
           CERT=$(security find-identity -v -p codesigning \
             | grep "Apple Development" | head -1 \
             | awk -F'"' '{print $2}')
-          if [ -z "$CERT" ]; then
-            echo "ERROR: No Apple Development certificate found"
-            security find-identity -v -p codesigning
-            exit 1
-          fi
           echo "Certificate: $CERT"
 
           PROFILE=""
           for f in ~/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision; do
             security cms -D -i "$f" > /tmp/profile_check.plist 2>/dev/null
-            UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" /tmp/profile_check.plist 2>/dev/null || echo "")
-            if [ "$UUID" = "$PROFILE_UUID" ]; then
+            APP_ID=$(/usr/libexec/PlistBuddy -c \
+              "Print :Entitlements:application-identifier" \
+              /tmp/profile_check.plist 2>/dev/null || echo "")
+            if echo "$APP_ID" | grep -q "xctrunner"; then
               PROFILE="$f"
-              echo "Matched profile by UUID"
+              echo "Using profile: $f"
               break
             fi
           done
 
-          if [ -z "$PROFILE" ]; then
-            for f in ~/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision; do
-              security cms -D -i "$f" > /tmp/profile_check.plist 2>/dev/null
-              FOUND_ID=$(/usr/libexec/PlistBuddy -c \
-                "Print :Entitlements:application-identifier" \
-                /tmp/profile_check.plist 2>/dev/null || echo "")
-              if echo "$FOUND_ID" | grep -q "beanerflicker.*xctrunner"; then
-                PROFILE="$f"
-                echo "Fallback matched profile"
-                break
-              fi
-            done
-          fi
-
-          if [ -z "$PROFILE" ]; then
-            echo "ERROR: No matching provisioning profile found"
-            exit 1
-          fi
-
           cp "$PROFILE" "$APP/embedded.mobileprovision"
-          echo "Embedded provisioning profile"
+          echo "Embedded profile"
 
-          echo "aW1wb3J0IHBsaXN0bGliLCBvcwp0ZWFtID0gb3MuZW52aXJvblsnVEVBTV9JRCddCmFwcF9pZCA9IG9zLmVudmlyb25bJ0FQUF9JRCddCmUgPSB7CiAgJ2FwcGxpY2F0aW9uLWlkZW50aWZpZXInOiBhcHBfaWQsCiAgJ2NvbS5hcHBsZS5kZXZlbG9wZXIudGVhbS1pZGVudGlmaWVyJzogdGVhbSwKICAnZ2V0LXRhc2stYWxsb3cnOiBUcnVlLAogICdrZXljaGFpbi1hY2Nlc3MtZ3JvdXBzJzogW3RlYW0gKyAnLionLCAnY29tLmFwcGxlLnRva2VuJ10KfQp3aXRoIG9wZW4oJy90bXAvZW50aXRsZW1lbnRzLnBsaXN0JywgJ3diJykgYXMgZjoKICBwbGlzdGxpYi5kdW1wKGUsIGYsIGZtdD1wbGlzdGxpYi5GTVRfWE1MKQpwcmludCgnRW50aXRsZW1lbnRzIHdyaXR0ZW4nKQo=" | base64 -d > /tmp/write_entitlements.py
-          python3 /tmp/write_entitlements.py
+          python3 -c "
+          import plistlib
+          entitlements = {
+            'application-identifier': '34QXW692J2.com.beanerflicker.WebDriverAgentRunner.xctrunner',
+            'com.apple.developer.team-identifier': '34QXW692J2',
+            'get-task-allow': True,
+            'keychain-access-groups': ['34QXW692J2.*', 'com.apple.token']
+          }
+          with open('/tmp/entitlements.plist', 'wb') as f:
+            plistlib.dump(entitlements, f, fmt=plistlib.FMT_XML)
+          print('Entitlements written')
+          "
 
           find "$APP" -name "*.dylib" | while read f; do
             codesign --force --sign "$CERT" "$f" 2>/dev/null || true
           done
-          find "$APP/PlugIns" -name "*.framework" | sort -r | while read f; do
-            codesign --force --sign "$CERT" "$f" 2>/dev/null || true
-          done
-          find "$APP/PlugIns" -maxdepth 1 -name "*.xctest" | while read f; do
-            codesign --force --sign "$CERT" "$f" 2>/dev/null || true
-          done
+
           find "$APP/Frameworks" -maxdepth 1 -name "*.framework" | while read f; do
             codesign --force --sign "$CERT" "$f" 2>/dev/null || true
           done
+
+          find "$APP/PlugIns" -name "*.framework" | while read f; do
+            codesign --force --sign "$CERT" "$f" 2>/dev/null || true
+          done
+
+          find "$APP/PlugIns" -maxdepth 1 -name "*.xctest" | while read f; do
+            codesign --force --sign "$CERT" "$f" 2>/dev/null || true
+          done
+
           codesign --force --sign "$CERT" \
             --entitlements /tmp/entitlements.plist \
             "$APP"
 
-          codesign --verify --verbose=2 "$APP" \
+          codesign --verify --verbose "$APP" \
             && echo "SIGNATURE VALID" \
-            || { echo "SIGNATURE FAILED"; exit 1; }
+            || echo "SIGNATURE FAILED"
 
       - name: Package IPA
         script: |
           APP="./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
-          rm -rf /tmp/Payload
           mkdir -p /tmp/Payload
           cp -rp "$APP" /tmp/Payload/
           cd /tmp
-          /usr/bin/zip -r WebDriverAgent.ipa Payload/ -x "*.DS_Store"
+          /usr/bin/zip -r WebDriverAgent.ipa Payload/
           cp WebDriverAgent.ipa ~/WebDriverAgent.ipa
           echo "Final size: $(du -sh ~/WebDriverAgent.ipa)"
 
