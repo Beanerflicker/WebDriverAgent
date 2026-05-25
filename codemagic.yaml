@@ -1,5 +1,5 @@
 # Optimized codemagic.yaml
-# Features: Compile-time check bypass, dynamic certificate lookup, AMFI-compliant manual signing
+# Features: Compile-time check bypass, dynamic certificate lookup, manual profile bundling, AMFI-compliant manual signing
 
 workflows:
   build-wda:
@@ -133,11 +133,25 @@ workflows:
           </plist>
           PYEOF
 
-          # 5. Dynamic Codesigning Identity Extraction
+          # 5. Extract and manually bundle the retrieved provisioning profile
+          # Essential because CODE_SIGNING_ALLOWED=NO bypasses automated bundling.
+          PROV_PROFILE=$(find "$HOME/Library/MobileDevice/Provisioning Profiles" -name "*.mobileprovision" | head -n 1)
+          if [ -z "$PROV_PROFILE" ]; then
+              PROV_PROFILE=$(find /Users/builder -name "*.mobileprovision" | head -n 1)
+          fi
+          
+          if [ -n "$PROV_PROFILE" ]; then
+              cp "$PROV_PROFILE" "$APP/embedded.mobileprovision"
+              echo "Manually bundled provisioning profile: $PROV_PROFILE"
+          else
+              echo "WARNING: No provisioning profile found to embed. AMFI will likely reject launch."
+          fi
+
+          # 6. Dynamic Codesigning Identity Extraction
           echo "Resolving signing identity from keychain..."
           EXP_KEY=$(security find-identity -v -p codesigning | grep "Development" | head -n 1 | awk -F'"' '{print $2}')
           if [ -z "$EXP_KEY" ]; then
-              # Fallback if no Development-labeled certificate matches
+              # Fallback to general signing identity if "Development" lookup string differs
               EXP_KEY=$(security find-identity -v -p codesigning | head -n 1 | awk -F'"' '{print $2}')
           fi
 
@@ -166,10 +180,10 @@ workflows:
           echo "Signing parent app bundle with entitlements"
           codesign --force --sign "$EXP_KEY" --entitlements /tmp/entitlements.plist "$APP"
 
-          # 6. Verify signature
+          # 7. Verify signature
           codesign --verify --deep --verbose=2 "$APP"
 
-          # 7. Package IPA
+          # 8. Package IPA
           mkdir -p Payload
           cp -r "$APP" Payload/
           zip -r WebDriverAgent.ipa Payload
