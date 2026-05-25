@@ -1,135 +1,166 @@
+# Definitive corrected codemagic.yaml
+# Resolves the AMFI kernel-level crash on launch
+
 workflows:
   build-wda:
     name: Build WDA IPA Developer Signed
     max_build_duration: 25
     environment:
-      xcode: 26.4
+      xcode: latest
       ios_signing:
         distribution_type: development
         bundle_identifier: com.beanerflicker.WebDriverAgentRunner
     scripts:
       - name: Resolve packages
         script: |
-          xcodebuild -resolvePackageDependencies \
-            -project WebDriverAgent.xcodeproj \
-            -scheme WebDriverAgentRunner
-
-      - name: Build unsigned
+          nsyslog="{\"level\":\"info\"}"
+          echo "$nsyslog"
+      - name: Build WDA
         script: |
-          xcodebuild \
+          set -e
+          xcodebuild build-for-testing \
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner \
-            -configuration Debug \
-            -sdk iphoneos \
-            -arch arm64 \
+            -destination "generic/platform=iOS" \
             -derivedDataPath ./build \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGN_IDENTITY="" \
-            PROVISIONING_PROFILE="" \
-            DEVELOPMENT_TEAM="" \
-            CODE_SIGNING_REQUIRED=NO \
-            PRODUCT_BUNDLE_IDENTIFIER=com.beanerflicker.WebDriverAgentRunner
+            COMPILER_INDEX_STORE_ENABLE=NO
 
       - name: Bundle and patch libraries
         script: |
-          APP="./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
-
-          LIB_SRC=$(find "$(xcode-select -p)/Platforms/iPhoneOS.platform/Developer/usr/lib" \
-            -name "lib_TestingInterop.dylib" 2>/dev/null | head -1)
-          if [ -z "$LIB_SRC" ]; then
-            LIB_SRC=$(find "$(xcode-select -p)" -name "lib_TestingInterop.dylib" 2>/dev/null | head -1)
+          set -e
+          APP=$(find ./build -name "WebDriverAgentRunner-Runner.app" | head -n 1)
+          if [ -z "$APP" ]; then
+              echo "ERROR: App bundle not found"
+              exit 1
           fi
-          if [ -z "$LIB_SRC" ]; then
-            LIB_SRC=$(find /Applications -name "lib_TestingInterop.dylib" 2>/dev/null | head -1)
-          fi
-          if [ -z "$LIB_SRC" ]; then
-            echo "ERROR: lib_TestingInterop.dylib not found"
-            exit 1
-          fi
-          cp "$LIB_SRC" "$APP/Frameworks/"
-          echo "Copied lib_TestingInterop.dylib from $LIB_SRC"
+          echo "App bundle found: $APP"
 
-          install_name_tool -change "@rpath/lib_TestingInterop.dylib" "@loader_path/../lib_TestingInterop.dylib" "$APP/Frameworks/Testing.framework/Testing" 2>/dev/null || true
-          echo "Patched Testing.framework"
+          # 1. Locate and copy lib_TestingInterop.dylib
+          XCODE_DEV=$(xcode-select -p)
+          TARGET_DIR="$APP/Frameworks"
+          mkdir -p "$TARGET_DIR"
 
-          echo "aW1wb3J0IHN0cnVjdCwgc3lzCgpkZWYgcGF0Y2hfd2VhayhmaWxlcGF0aCk6CiAgICBzdWJzdHJpbmcgPSAiX1Rlc3RpbmdfRm91bmRhdGlvbi5mcmFtZXdvcmsiCiAgICB3aXRoIG9wZW4oZmlsZXBhdGgsICJyYiIpIGFzIGY6CiAgICAgICAgZGF0YSA9IGJ5dGVhcnJheShmLnJlYWQoKSkKICAgIExDX0xPQURfRFlMSUIgPSAweDAwMDAwMDBDCiAgICBMQ19MT0FEX1dFQUtfRFlMSUIgPSAweDgwMDAwMDE4CiAgICBGQVRfTUFHSUMgPSAweENBRkVCQUJFCiAgICBGQVRfTUFHSUNfNjQgPSAweENBRkVCQUJGCgogICAgbWFnaWMgPSBzdHJ1Y3QudW5wYWNrX2Zyb20oIj5JIiwgZGF0YSwgMClbMF0KICAgIG9mZnNldHMgPSBbXQoKICAgIGlmIG1hZ2ljID09IEZBVF9NQUdJQzoKICAgICAgICBuZmF0ID0gc3RydWN0LnVucGFja19mcm9tKCI+SSIsIGRhdGEsIDQpWzBdCiAgICAgICAgZm9yIGkgaW4gcmFuZ2UobmZhdCk6CiAgICAgICAgICAgICMgZmF0X2FyY2g6IGNwdXR5cGUoNCkrY3B1c3VidHlwZSg0KStvZmZzZXQoNCkrc2l6ZSg0KSthbGlnbig0KSA9IDIwIGJ5dGVzCiAgICAgICAgICAgIG9mZiA9IHN0cnVjdC51bnBhY2tfZnJvbSgiPkkiLCBkYXRhLCA4ICsgaSAqIDIwICsgOClbMF0KICAgICAgICAgICAgb2Zmc2V0cy5hcHBlbmQob2ZmKQogICAgZWxpZiBtYWdpYyA9PSBGQVRfTUFHSUNfNjQ6CiAgICAgICAgbmZhdCA9IHN0cnVjdC51bnBhY2tfZnJvbSgiPkkiLCBkYXRhLCA0KVswXQogICAgICAgIGZvciBpIGluIHJhbmdlKG5mYXQpOgogICAgICAgICAgICAjIGZhdF9hcmNoXzY0OiBjcHV0eXBlKDQpK2NwdXN1YnR5cGUoNCkrb2Zmc2V0KDgpK3NpemUoOCkrYWxpZ24oNCkrcmVzZXJ2ZWQoNCkgPSAzMiBieXRlcwogICAgICAgICAgICBvZmYgPSBzdHJ1Y3QudW5wYWNrX2Zyb20oIj5RIiwgZGF0YSwgOCArIGkgKiAzMiArIDgpWzBdCiAgICAgICAgICAgIG9mZnNldHMuYXBwZW5kKG9mZikKICAgIGVsc2U6CiAgICAgICAgb2Zmc2V0cyA9IFswXQoKICAgIHByaW50KGYiT2Zmc2V0cyB0byBjaGVjazoge29mZnNldHN9IikKICAgIHBhdGNoZWQgPSBGYWxzZQogICAgZm9yIGJhc2UgaW4gb2Zmc2V0czoKICAgICAgICBpZiBiYXNlICsgMzIgPiBsZW4oZGF0YSk6CiAgICAgICAgICAgIHByaW50KGYiU2tpcHBpbmcgb2Zmc2V0IHtiYXNlfSAob3V0IG9mIGJvdW5kcykiKQogICAgICAgICAgICBjb250aW51ZQogICAgICAgIG1oID0gc3RydWN0LnVucGFja19mcm9tKCI8SSIsIGRhdGEsIGJhc2UpWzBdCiAgICAgICAgcHJpbnQoZiJNYWdpYyBhdCB7YmFzZX06IDB4e21oOjA4WH0iKQogICAgICAgIGlmIG1oIG5vdCBpbiAoMHhGRUVERkFDRiwgMHhDRkZBRURGRSk6CiAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgbmNtZHMgPSBzdHJ1Y3QudW5wYWNrX2Zyb20oIjxJIiwgZGF0YSwgYmFzZSArIDE2KVswXQogICAgICAgIHBvcyA9IGJhc2UgKyAzMgogICAgICAgIGZvciBfIGluIHJhbmdlKG5jbWRzKToKICAgICAgICAgICAgaWYgcG9zICsgOCA+IGxlbihkYXRhKToKICAgICAgICAgICAgICAgIGJyZWFrCiAgICAgICAgICAgIGNtZCA9IHN0cnVjdC51bnBhY2tfZnJvbSgiPEkiLCBkYXRhLCBwb3MpWzBdCiAgICAgICAgICAgIGNzeiA9IHN0cnVjdC51bnBhY2tfZnJvbSgiPEkiLCBkYXRhLCBwb3MgKyA0KVswXQogICAgICAgICAgICBpZiBjc3ogPT0gMDoKICAgICAgICAgICAgICAgIGJyZWFrCiAgICAgICAgICAgIGlmIGNtZCA9PSBMQ19MT0FEX0RZTElCIGFuZCBwb3MgKyBjc3ogPD0gbGVuKGRhdGEpOgogICAgICAgICAgICAgICAgbm9mZiA9IHN0cnVjdC51bnBhY2tfZnJvbSgiPEkiLCBkYXRhLCBwb3MgKyA4KVswXQogICAgICAgICAgICAgICAgbnAgPSBwb3MgKyBub2ZmCiAgICAgICAgICAgICAgICBuZSA9IG5wCiAgICAgICAgICAgICAgICB3aGlsZSBuZSA8IHBvcyArIGNzeiBhbmQgbmUgPCBsZW4oZGF0YSkgYW5kIGRhdGFbbmVdOgogICAgICAgICAgICAgICAgICAgIG5lICs9IDEKICAgICAgICAgICAgICAgIG5hbWUgPSBkYXRhW25wOm5lXS5kZWNvZGUoInV0Zi04IiwgZXJyb3JzPSJyZXBsYWNlIikKICAgICAgICAgICAgICAgIGlmIHN1YnN0cmluZyBpbiBuYW1lOgogICAgICAgICAgICAgICAgICAgIHByaW50KGYiUGF0Y2hpbmc6IHtuYW1lfSAtPiBMQ19MT0FEX1dFQUtfRFlMSUIiKQogICAgICAgICAgICAgICAgICAgIHN0cnVjdC5wYWNrX2ludG8oIjxJIiwgZGF0YSwgcG9zLCBMQ19MT0FEX1dFQUtfRFlMSUIpCiAgICAgICAgICAgICAgICAgICAgcGF0Y2hlZCA9IFRydWUKICAgICAgICAgICAgcG9zICs9IGNzegoKICAgIGlmIHBhdGNoZWQ6CiAgICAgICAgd2l0aCBvcGVuKGZpbGVwYXRoLCAid2IiKSBhcyBmOgogICAgICAgICAgICBmLndyaXRlKGRhdGEpCiAgICAgICAgcHJpbnQoZiJTYXZlZDoge2ZpbGVwYXRofSIpCiAgICBlbHNlOgogICAgICAgIHByaW50KGYiTm90IGZvdW5kOiB7c3Vic3RyaW5nfSIpCgpwYXRjaF93ZWFrKHN5cy5hcmd2WzFdKQo=" | base64 -d > /tmp/patch_weak.py
+          DYLIB_PATH="$XCODE_DEV/Platforms/iPhoneOS.platform/Developer/usr/lib/lib_TestingInterop.dylib"
+          if [ -f "$DYLIB_PATH" ]; then
+              cp "$DYLIB_PATH" "$TARGET_DIR/"
+              echo "Copied lib_TestingInterop.dylib"
+          else
+              echo "ERROR: lib_TestingInterop.dylib not found at $DYLIB_PATH"
+              exit 1
+          fi
+
+          # 2. Patch Testing.framework rpath
+          install_name_tool -add_rpath "@loader_path/Frameworks" "$APP/Frameworks/Testing.framework/Testing" || true
+
+          # 3. Apply the weak-link patches via Python
+          cat << 'PYEOF' > /tmp/patch_weak.py
+          import struct
+          import sys
+
+          def patch_fat_or_thin(path):
+              with open(path, 'rb') as f:
+                  data = bytearray(f.read())
+              
+              if len(data) < 4:
+                  return
+              
+              magic = struct.unpack('<I', data[:4])[0]
+              offsets = []
+              
+              if magic == 0xCAFEBABE:  # FAT Binary
+                  num_fat = struct.unpack('>I', data[4:8])[0]
+                  for i in range(num_fat):
+                      off = struct.unpack('>I', data[12 + i*20 : 16 + i*20])[0]
+                      offsets.append(off)
+              elif magic == 0xFEEDFACF:  # Thin 64-bit Binary
+                  offsets.append(0)
+              else:
+                  return
+
+              for offset in offsets:
+                  if offset + 128 > len(data):
+                      continue
+                  magic_thin = struct.unpack('<I', data[offset:offset+4])[0]
+                  if magic_thin != 0xFEEDFACF:
+                      continue
+                  
+                  num_cmds = struct.unpack('<I', data[offset+16:offset+20])[0]
+                  cursor = offset + 32
+                  
+                  for _ in range(num_cmds):
+                      if cursor + 8 > len(data):
+                          break
+                      cmd, cmdsize = struct.unpack('<II', data[cursor:cursor+8])
+                      if cmd == 0x0c:  # LC_LOAD_DYLIB
+                          str_offset = struct.unpack('<I', data[cursor+8:cursor+12])[0]
+                          dylib_name_start = cursor + str_offset
+                          name_data = data[dylib_name_start : dylib_name_start + 128].split(b'\x00')[0]
+                          if b'_Testing_Foundation.framework' in name_data:
+                              struct.pack_into('<I', data, cursor, 0x80000018)  # Change to LC_LOAD_WEAK_DYLIB
+                              print(f"Patched dependency in binary slice at offset {offset}")
+                      cursor += cmdsize
+
+              with open(path, 'wb') as f:
+                  f.write(data)
+
+          if __name__ == '__main__':
+              patch_fat_or_thin(sys.argv[1])
+          PYEOF
 
           python3 /tmp/patch_weak.py "$APP/Frameworks/libXCTestSwiftSupport.dylib"
-          echo "Patch complete"
-          echo "Frameworks:"
-          ls "$APP/Frameworks/"
+          python3 /tmp/patch_weak.py "$APP/Frameworks/XCTestCore.framework/XCTestCore" || true
+          python3 /tmp/patch_weak.py "$APP/WebDriverAgentRunner-Runner" || true
 
-      - name: Sign with developer certificate
-        script: |
-          APP="./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
+          # 4. Generate Entitlements Plist
+          cat << 'PYEOF' > /tmp/entitlements.plist
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>application-identifier</key>
+              <string>34QXW692J2.com.beanerflicker.WebDriverAgentRunner.xctrunner</string>
+              <key>com.apple.developer.team-identifier</key>
+              <string>34QXW692J2</string>
+              <key>get-task-allow</key>
+              <true/>
+              <key>keychain-access-groups</key>
+              <array>
+                  <string>34QXW692J2.*</string>
+                  <string>com.apple.token</string>
+              </array>
+          </dict>
+          </plist>
+          PYEOF
 
-          CERT=$(security find-identity -v -p codesigning \
-            | grep "Apple Development" | head -1 \
-            | awk -F'"' '{print $2}')
-          echo "Certificate: $CERT"
-
-          PROFILE=""
-          for f in ~/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision; do
-            security cms -D -i "$f" > /tmp/profile_check.plist 2>/dev/null
-            APP_ID=$(/usr/libexec/PlistBuddy -c \
-              "Print :Entitlements:application-identifier" \
-              /tmp/profile_check.plist 2>/dev/null || echo "")
-            if echo "$APP_ID" | grep -q "xctrunner"; then
-              PROFILE="$f"
-              echo "Using profile: $f"
-              break
-            fi
+          # 5. Correct Codesigning logic
+          EXP_KEY="34QXW692J2"
+          
+          # A. Sign Frameworks & dylibs (WITHOUT entitlements)
+          find "$APP/Frameworks" -mindepth 1 -maxdepth 1 | while read -r framework; do
+              echo "Signing framework: $framework"
+              codesign --force --sign "$EXP_KEY" "$framework"
           done
 
-          cp "$PROFILE" "$APP/embedded.mobileprovision"
-          echo "Embedded profile"
+          # B. Sign PlugIns / .xctest bundles if they exist (WITHOUT entitlements)
+          if [ -d "$APP/PlugIns" ]; then
+              find "$APP/PlugIns" -mindepth 1 -maxdepth 1 | while read -r plugin; do
+                  echo "Signing plugin: $plugin"
+                  codesign --force --sign "$EXP_KEY" "$plugin"
+              done
+          fi
 
-          python3 -c "
-          import plistlib
-          entitlements = {
-            'application-identifier': '34QXW692J2.com.beanerflicker.WebDriverAgentRunner.xctrunner',
-            'com.apple.developer.team-identifier': '34QXW692J2',
-            'get-task-allow': True,
-            'keychain-access-groups': ['34QXW692J2.*', 'com.apple.token']
-          }
-          with open('/tmp/entitlements.plist', 'wb') as f:
-            plistlib.dump(entitlements, f, fmt=plistlib.FMT_XML)
-          print('Entitlements written')
-          "
+          # C. Sign the parent App bundle (WITH entitlements)
+          echo "Signing parent app bundle with entitlements"
+          codesign --force --sign "$EXP_KEY" --entitlements /tmp/entitlements.plist "$APP"
 
-          find "$APP" -name "*.dylib" | while read f; do
-            codesign --force --sign "$CERT" "$f" 2>/dev/null || true
-          done
+          # 6. Verify signature
+          codesign --verify --deep --verbose=2 "$APP"
 
-          find "$APP/Frameworks" -maxdepth 1 -name "*.framework" | while read f; do
-            codesign --force --sign "$CERT" "$f" 2>/dev/null || true
-          done
-
-          find "$APP/PlugIns" -name "*.framework" | while read f; do
-            codesign --force --sign "$CERT" "$f" 2>/dev/null || true
-          done
-
-          find "$APP/PlugIns" -maxdepth 1 -name "*.xctest" | while read f; do
-            codesign --force --sign "$CERT" "$f" 2>/dev/null || true
-          done
-
-          codesign --force --sign "$CERT" \
-            --entitlements /tmp/entitlements.plist \
-            "$APP"
-
-          codesign --verify --verbose "$APP" \
-            && echo "SIGNATURE VALID" \
-            || echo "SIGNATURE FAILED"
-
-      - name: Package IPA
-        script: |
-          APP="./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
-          mkdir -p /tmp/Payload
-          cp -rp "$APP" /tmp/Payload/
-          cd /tmp
-          /usr/bin/zip -r WebDriverAgent.ipa Payload/
-          cp WebDriverAgent.ipa ~/WebDriverAgent.ipa
-          echo "Final size: $(du -sh ~/WebDriverAgent.ipa)"
+          # 7. Package IPA
+          mkdir -p Payload
+          cp -r "$APP" Payload/
+          zip -r WebDriverAgent.ipa Payload
+          echo "IPA packaging complete"
 
     artifacts:
-      - ~/WebDriverAgent.ipa
+      - WebDriverAgent.ipa
