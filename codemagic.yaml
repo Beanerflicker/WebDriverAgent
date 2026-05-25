@@ -1,5 +1,5 @@
 # Definitive corrected codemagic.yaml
-# Resolves the AMFI kernel-level crash on launch
+# Bypasses Xcode compile-time signing checks and performs correct manual codesigning
 
 workflows:
   build-wda:
@@ -23,7 +23,8 @@ workflows:
             -scheme WebDriverAgentRunner \
             -destination "generic/platform=iOS" \
             -derivedDataPath ./build \
-            COMPILER_INDEX_STORE_ENABLE=NO
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            CODE_SIGNING_ALLOWED=NO
 
       - name: Bundle and patch libraries
         script: |
