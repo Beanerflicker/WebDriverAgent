@@ -1,5 +1,5 @@
-# Definitive corrected codemagic.yaml
-# Bypasses Xcode compile-time signing checks and performs correct manual codesigning
+# Optimized codemagic.yaml
+# Features: Compile-time check bypass, dynamic certificate lookup, AMFI-compliant manual signing
 
 workflows:
   build-wda:
@@ -133,8 +133,20 @@ workflows:
           </plist>
           PYEOF
 
-          # 5. Correct Codesigning logic
-          EXP_KEY="34QXW692J2"
+          # 5. Dynamic Codesigning Identity Extraction
+          echo "Resolving signing identity from keychain..."
+          EXP_KEY=$(security find-identity -v -p codesigning | grep "Development" | head -n 1 | awk -F'"' '{print $2}')
+          if [ -z "$EXP_KEY" ]; then
+              # Fallback if no Development-labeled certificate matches
+              EXP_KEY=$(security find-identity -v -p codesigning | head -n 1 | awk -F'"' '{print $2}')
+          fi
+
+          if [ -z "$EXP_KEY" ]; then
+              echo "ERROR: No valid signing identities found in keychain."
+              security find-identity -v -p codesigning
+              exit 1
+          fi
+          echo "Resolved identity: $EXP_KEY"
           
           # A. Sign Frameworks & dylibs (WITHOUT entitlements)
           find "$APP/Frameworks" -mindepth 1 -maxdepth 1 | while read -r framework; do
