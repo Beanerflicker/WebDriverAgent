@@ -11,16 +11,6 @@ workflows:
       - name: Build WDA
         script: |
           set -e
-          # Phase 1: Build the Host App (provides the home screen icon)
-          xcodebuild build \
-            -project WebDriverAgent.xcodeproj \
-            -scheme WebDriverAgentRunner \
-            -destination "generic/platform=iOS" \
-            -derivedDataPath ./build \
-            COMPILER_INDEX_STORE_ENABLE=NO \
-            CODE_SIGNING_ALLOWED=NO
-
-          # Phase 2: Build the Test Runner (.xctrunner)
           xcodebuild build-for-testing \
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner \
@@ -32,30 +22,19 @@ workflows:
       - name: Bundle and patch libraries
         script: |
           set -e
-          PROD_DIR="./build/Build/Products/Debug-iphoneos"
-          
-          # Explicitly locate products
-          RUNNER=$(find "$PROD_DIR" -name "WebDriverAgentRunner-Runner.app")
-          HOST=$(find "$PROD_DIR" -name "WebDriverAgentRunner.app")
-          
-          if [ -z "$HOST" ] || [ -z "$RUNNER" ]; then
-            echo "ERROR: Missing bundles. Host: [$HOST] Runner: [$RUNNER]"
-            ls -R "$PROD_DIR"
-            exit 1
-          fi
+          APP=$(find ./build -name "WebDriverAgentRunner-Runner.app" | head -n 1)
+          echo "App bundle found: $APP"
 
-          echo "Using Runner: $RUNNER"
-          echo "Using Host: $HOST"
+          # 1. MAKE RUNNER VISIBLE (Removes BackgroundOnly restriction)
+          echo "Making Runner visible on Home Screen..."
+          /usr/libexec/PlistBuddy -c "Delete :LSBackgroundOnly" "$APP/Info.plist" || true
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.beanerflicker.WebDriverAgentRunner.xctrunner" "$APP/Info.plist"
 
-          # 1. Aligns Bundle IDs with your profiles
-          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.beanerflicker.WebDriverAgentRunner.xctrunner" "$RUNNER/Info.plist"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.beanerflicker.WebDriverAgentRunner" "$HOST/Info.plist"
-
-          # 2. Patch Runner for iOS 26 compatibility
+          # 2. Copy Interop Dylib
           XCODE_DEV=$(xcode-select -p)
-          mkdir -p "$RUNNER/Frameworks"
-          cp "$XCODE_DEV/Platforms/iPhoneOS.platform/Developer/usr/lib/lib_TestingInterop.dylib" "$RUNNER/Frameworks/"
-          
+          cp "$XCODE_DEV/Platforms/iPhoneOS.platform/Developer/usr/lib/lib_TestingInterop.dylib" "$APP/Frameworks/"
+
+          # 3. Comprehensive Weak-Link Patching
           cat << 'EOF' > /tmp/patch_weak.py
           import struct, sys, os
           def patch(fp):
@@ -76,39 +55,33 @@ workflows:
               with open(fp, "wb") as f: f.write(data)
           patch(sys.argv[1])
           EOF
+          python3 /tmp/patch_weak.py "$APP/Frameworks/libXCTestSwiftSupport.dylib"
+          python3 /tmp/patch_weak.py "$APP/Frameworks/XCTestCore.framework/XCTestCore"
+          python3 /tmp/patch_weak.py "$APP/WebDriverAgentRunner-Runner"
 
-          python3 /tmp/patch_weak.py "$RUNNER/Frameworks/libXCTestSwiftSupport.dylib"
-          python3 /tmp/patch_weak.py "$RUNNER/Frameworks/XCTestCore.framework/XCTestCore"
-          python3 /tmp/patch_weak.py "$RUNNER/WebDriverAgentRunner-Runner"
-
-          # 3. Dynamic Signing
-          EXP_KEY=$(security find-identity -v -p codesigning | grep "Apple Development" | head -n 1 | awk -F'"' '{print $2}')
+          # 4. Handle Profile and Dynamic Signing
+          PROV_PROFILE=$(find /Users/builder -name "*.mobileprovision" | head -n 1)
+          cp "$PROV_PROFILE" "$APP/embedded.mobileprovision"
+          python3 -c "import plistlib; data=open('$APP/embedded.mobileprovision','rb').read(); start=data.find(b'<?xml'); end=data.find(b'</plist>')+8; plist=plistlib.loads(data[start:end]); plistlib.dump(plist['Entitlements'], open('/tmp/entitlements.plist','wb'))"
           
-          sign_bundle() {
-            local TARGET=$1
-            local BUNDLE_ID=$2
-            # Match profile by Bundle ID string
-            local PROFILE=$(grep -l "$BUNDLE_ID" /Users/builder/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision | head -n 1)
-            
-            echo "Signing $TARGET with profile $PROFILE"
-            cp "$PROFILE" "$TARGET/embedded.mobileprovision"
-            
-            # Generate Entitlements
-            python3 -c "import plistlib; data=open('$TARGET/embedded.mobileprovision','rb').read(); start=data.find(b'<?xml'); end=data.find(b'</plist>')+8; plist=plistlib.loads(data[start:end]); plistlib.dump(plist['Entitlements'], open('/tmp/ent.plist','wb'))"
-            
-            # Deep Signing
-            find "$TARGET" -depth -name "*.framework" -exec codesign --force --sign "$EXP_KEY" {} \;
-            find "$TARGET" -depth -name "*.dylib" -exec codesign --force --sign "$EXP_KEY" {} \;
-            codesign --force --sign "$EXP_KEY" --entitlements /tmp/entitlements.plist "$TARGET"
-          }
+          EXP_KEY=$(security find-identity -v -p codesigning | grep "Apple Development" | head -n 1 | awk -F'"' '{print $2}')
+          echo "Using Certificate: $EXP_KEY"
 
-          sign_bundle "$HOST" "com.beanerflicker.WebDriverAgentRunner"
-          sign_bundle "$RUNNER" "com.beanerflicker.WebDriverAgentRunner.xctrunner"
+          # 5. RECURSIVE DEEP SIGNING
+          # Sign nested WebDriverAgentLib first
+          find "$APP" -depth -name "*.framework" -exec codesign --force --sign "$EXP_KEY" {} \;
+          # Sign plugins
+          find "$APP" -depth -name "*.xctest" -exec codesign --force --sign "$EXP_KEY" {} \;
+          # Sign dylibs
+          find "$APP" -depth -name "*.dylib" -exec codesign --force --sign "$EXP_KEY" {} \;
+          # Sign main Runner bundle last with entitlements
+          codesign --force --sign "$EXP_KEY" --entitlements /tmp/entitlements.plist "$APP"
+
+          codesign --verify --deep --verbose "$APP" && echo "SIGNATURE VALID"
 
       - name: Package IPA
         script: |
           mkdir -p Payload
-          cp -r ./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner.app Payload/
           cp -r ./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app Payload/
           zip -r WebDriverAgent.ipa Payload
     artifacts:
