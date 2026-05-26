@@ -9,7 +9,7 @@ workflows:
       xcode: latest
       ios_signing:
         distribution_type: development
-        bundle_identifier: com.beanerflicker.WebDriverAgentRunner
+        bundle_identifier: com.beanerflicker.WebDriverAgentRunner.xctrunner
     scripts:
       - name: Resolve packages
         script: |
