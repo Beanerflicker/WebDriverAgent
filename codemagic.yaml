@@ -11,7 +11,7 @@ workflows:
       - name: Build WDA
         script: |
           set -e
-          # Build for testing creates both the App and the Runner
+          # Building for testing generates both the Host (.app) and the Runner (.xctrunner)
           xcodebuild build-for-testing \
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner \
@@ -23,18 +23,26 @@ workflows:
       - name: Bundle and patch libraries
         script: |
           set -e
-          # Locate both bundles
-          RUNNER=$(find ./build -name "WebDriverAgentRunner-Runner.app" | head -n 1)
-          HOST=$(find ./build -name "WebDriverAgentRunner.app" | head -n 1)
-          echo "Runner: $RUNNER"
-          echo "Host: $HOST"
+          # 1. Define explicit paths to the build products
+          PROD_DIR="./build/Build/Products/Debug-iphoneos"
+          RUNNER="$PROD_DIR/WebDriverAgentRunner-Runner.app"
+          HOST="$PROD_DIR/WebDriverAgentRunner.app"
+          
+          if [ ! -d "$HOST" ]; then
+            echo "ERROR: Host app not found at $HOST. Attempting fallback find..."
+            HOST=$(find ./build -name "WebDriverAgentRunner.app" -not -path "*Runner.app*" | head -n 1)
+          fi
+          
+          echo "Using Runner: $RUNNER"
+          echo "Using Host: $HOST"
 
-          # 1. Force Bundle ID alignment on both
+          # 2. CFBundleIdentifier Rewrite (Aligns both apps with your profiles)
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.beanerflicker.WebDriverAgentRunner.xctrunner" "$RUNNER/Info.plist"
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.beanerflicker.WebDriverAgentRunner" "$HOST/Info.plist"
 
-          # 2. Patch frameworks for iOS 26 compatibility
+          # 3. Patch Runner for iOS 26 compatibility
           XCODE_DEV=$(xcode-select -p)
+          mkdir -p "$RUNNER/Frameworks"
           cp "$XCODE_DEV/Platforms/iPhoneOS.platform/Developer/usr/lib/lib_TestingInterop.dylib" "$RUNNER/Frameworks/"
           
           cat << 'EOF' > /tmp/patch_weak.py
@@ -62,27 +70,39 @@ workflows:
           python3 /tmp/patch_weak.py "$RUNNER/Frameworks/XCTestCore.framework/XCTestCore"
           python3 /tmp/patch_weak.py "$RUNNER/WebDriverAgentRunner-Runner"
 
-          # 3. Handle Signing
-          PROV_PROFILE=$(find /Users/builder -name "*.mobileprovision" | head -n 1)
+          # 4. Identify Profiles and Certificate
           EXP_KEY=$(security find-identity -v -p codesigning | grep "Apple Development" | head -n 1 | awk -F'"' '{print $2}')
-          
-          # Sign everything inside both bundles
-          for BUNDLE in "$RUNNER" "$HOST"; do
-            cp "$PROV_PROFILE" "$BUNDLE/embedded.mobileprovision"
-            python3 -c "import plistlib; d=open('$BUNDLE/embedded.mobileprovision','rb').read(); s=d.find(b'<?xml'); e=d.find(b'</plist>')+8; p=plistlib.loads(d[s:e]); plistlib.dump(p['Entitlements'], open('/tmp/ent.plist','wb'))"
-            find "$BUNDLE" -depth -name "*.framework" -exec codesign --force --sign "$EXP_KEY" {} \;
-            find "$BUNDLE" -depth -name "*.dylib" -exec codesign --force --sign "$EXP_KEY" {} \;
-            codesign --force --sign "$EXP_KEY" --entitlements /tmp/ent.plist "$BUNDLE"
-          done
+          echo "Using Certificate: $EXP_KEY"
 
-          echo "SIGNATURE VALID"
+          # Function to extract entitlements and sign
+          sign_bundle() {
+            local TARGET=$1
+            local BUNDLE_ID=$2
+            # Find the specific profile matching this bundle ID
+            local PROFILE=$(find /Users/builder -name "*.mobileprovision" | while read p; do
+              if grep -q "$BUNDLE_ID" "$p"; then echo "$p"; break; fi
+            done)
+            
+            echo "Signing $TARGET with profile $PROFILE"
+            cp "$PROFILE" "$TARGET/embedded.mobileprovision"
+            python3 -c "import plistlib; data=open('$TARGET/embedded.mobileprovision','rb').read(); start=data.find(b'<?xml'); end=data.find(b'</plist>')+8; plist=plistlib.loads(data[start:end]); plistlib.dump(plist['Entitlements'], open('/tmp/ent.plist','wb'))"
+            
+            # Recursive Deep Signing
+            find "$TARGET" -depth -name "*.framework" -exec codesign --force --sign "$EXP_KEY" {} \;
+            find "$TARGET" -depth -name "*.xctest" -exec codesign --force --sign "$EXP_KEY" {} \;
+            find "$TARGET" -depth -name "*.dylib" -exec codesign --force --sign "$EXP_KEY" {} \;
+            codesign --force --sign "$EXP_KEY" --entitlements /tmp/ent.plist "$TARGET"
+          }
+
+          # Sign Host then Runner
+          sign_bundle "$HOST" "com.beanerflicker.WebDriverAgentRunner"
+          sign_bundle "$RUNNER" "com.beanerflicker.WebDriverAgentRunner.xctrunner"
 
       - name: Package IPA
         script: |
           mkdir -p Payload
-          # Package BOTH apps into the IPA
-          cp -r ./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app Payload/
           cp -r ./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner.app Payload/
+          cp -r ./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app Payload/
           zip -r WebDriverAgent.ipa Payload
     artifacts:
       - WebDriverAgent.ipa
