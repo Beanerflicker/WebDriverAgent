@@ -1,5 +1,5 @@
-# Optimized codemagic.yaml
-# Features: Compile-time check bypass, dynamic certificate lookup, manual profile bundling, AMFI-compliant manual signing
+# Dynamic, Self-Healing codemagic.yaml
+# Features: Dynamic signing identity extraction, dynamic entitlements cloning, AMFI-compliant manual signing
 
 workflows:
   build-wda:
@@ -112,29 +112,7 @@ workflows:
           python3 /tmp/patch_weak.py "$APP/Frameworks/XCTestCore.framework/XCTestCore" || true
           python3 /tmp/patch_weak.py "$APP/WebDriverAgentRunner-Runner" || true
 
-          # 4. Generate Entitlements Plist
-          cat << 'PYEOF' > /tmp/entitlements.plist
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>application-identifier</key>
-              <string>34QXW692J2.com.beanerflicker.WebDriverAgentRunner.xctrunner</string>
-              <key>com.apple.developer.team-identifier</key>
-              <string>34QXW692J2</string>
-              <key>get-task-allow</key>
-              <true/>
-              <key>keychain-access-groups</key>
-              <array>
-                  <string>34QXW692J2.*</string>
-                  <string>com.apple.token</string>
-              </array>
-          </dict>
-          </plist>
-          PYEOF
-
-          # 5. Extract and manually bundle the retrieved provisioning profile
-          # Essential because CODE_SIGNING_ALLOWED=NO bypasses automated bundling.
+          # 4. Extract and manually bundle the retrieved provisioning profile
           PROV_PROFILE=$(find "$HOME/Library/MobileDevice/Provisioning Profiles" -name "*.mobileprovision" | head -n 1)
           if [ -z "$PROV_PROFILE" ]; then
               PROV_PROFILE=$(find /Users/builder -name "*.mobileprovision" | head -n 1)
@@ -144,14 +122,49 @@ workflows:
               cp "$PROV_PROFILE" "$APP/embedded.mobileprovision"
               echo "Manually bundled provisioning profile: $PROV_PROFILE"
           else
-              echo "WARNING: No provisioning profile found to embed. AMFI will likely reject launch."
+              echo "ERROR: No provisioning profile found to embed."
+              exit 1
           fi
+
+          # 5. Dynamically clone the exact entitlements dictionary from the profile
+          cat << 'PYEOF' > /tmp/gen_entitlements.py
+          import sys
+          import plistlib
+
+          def main():
+              prov_path = sys.argv[1]
+              out_path = sys.argv[2]
+              
+              with open(prov_path, 'rb') as f:
+                  data = f.read()
+                  
+              start = data.find(b'<?xml')
+              end = data.find(b'</plist>') + 8
+              if start == -1 or end == -1:
+                  print("ERROR: Could not parse XML from provisioning profile")
+                  sys.exit(1)
+                  
+              plist_data = data[start:end]
+              profile = plistlib.loads(plist_data)
+              
+              # Extract entitlements directly
+              entitlements = profile.get('Entitlements', {})
+              
+              with open(out_path, 'wb') as f:
+                  plistlib.dump(entitlements, f)
+                  
+              print(f"Entitlements generated from profile: {entitlements.get('application-identifier')}")
+
+          if __name__ == '__main__':
+              main()
+          PYEOF
+
+          python3 /tmp/gen_entitlements.py "$APP/embedded.mobileprovision" /tmp/entitlements.plist
 
           # 6. Dynamic Codesigning Identity Extraction
           echo "Resolving signing identity from keychain..."
           EXP_KEY=$(security find-identity -v -p codesigning | grep "Development" | head -n 1 | awk -F'"' '{print $2}')
           if [ -z "$EXP_KEY" ]; then
-              # Fallback to general signing identity if "Development" lookup string differs
               EXP_KEY=$(security find-identity -v -p codesigning | head -n 1 | awk -F'"' '{print $2}')
           fi
 
@@ -177,7 +190,7 @@ workflows:
           fi
 
           # C. Sign the parent App bundle (WITH entitlements)
-          echo "Signing parent app bundle with entitlements"
+          echo "Signing parent app bundle with dynamic entitlements"
           codesign --force --sign "$EXP_KEY" --entitlements /tmp/entitlements.plist "$APP"
 
           # 7. Verify signature
