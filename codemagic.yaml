@@ -25,19 +25,19 @@ workflows:
           APP=$(find ./build -name "WebDriverAgentRunner-Runner.app" | head -n 1)
           echo "App bundle found: $APP"
 
-          # 1. Copy Interop Dylib
+          # 1. Force Bundle ID alignment (Fixes profile visibility)
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.beanerflicker.WebDriverAgentRunner.xctrunner" "$APP/Info.plist"
+
+          # 2. Copy the Interop library
           XCODE_DEV=$(xcode-select -p)
           cp "$XCODE_DEV/Platforms/iPhoneOS.platform/Developer/usr/lib/lib_TestingInterop.dylib" "$APP/Frameworks/"
 
-          # 2. CFBundleIdentifier Rewrite (The fix for "Did not find test app")
-          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.beanerflicker.WebDriverAgentRunner.xctrunner" "$APP/Info.plist"
-
-          # 3. Create Weak-Link Patch Script
+          # 3. Comprehensive Weak-Link Patching (Patches all 3 critical binaries)
           cat << 'EOF' > /tmp/patch_weak.py
-          import struct, sys
+          import struct, sys, os
           def patch(fp):
-              with open(fp, "rb") as f:
-                  data = bytearray(f.read())
+              if not os.path.exists(fp): return
+              with open(fp, "rb") as f: data = bytearray(f.read())
               if len(data) < 4: return
               magic = struct.unpack("<I", data[:4])[0]
               if magic != 0xFEEDFACF: return
@@ -51,36 +51,32 @@ workflows:
                       if b"_Testing_Foundation" in name:
                           struct.pack_into("<I", data, cursor, 0x80000018)
                   cursor += sz
-              with open(fp, "wb") as f:
-                  f.write(data)
-          if __name__ == "__main__":
-              patch(sys.argv[1])
+              with open(fp, "wb") as f: f.write(data)
+              print(f"Patched: {fp}")
+          patch(sys.argv[1])
           EOF
 
           python3 /tmp/patch_weak.py "$APP/Frameworks/libXCTestSwiftSupport.dylib"
+          python3 /tmp/patch_weak.py "$APP/Frameworks/XCTestCore.framework/XCTestCore"
+          python3 /tmp/patch_weak.py "$APP/WebDriverAgentRunner-Runner"
 
-          # 4. Extract Entitlements
+          # 4. Profile and Entitlements
           PROV_PROFILE=$(find /Users/builder -name "*.mobileprovision" | head -n 1)
           cp "$PROV_PROFILE" "$APP/embedded.mobileprovision"
           python3 -c "import plistlib; data=open('$APP/embedded.mobileprovision','rb').read(); start=data.find(b'<?xml'); end=data.find(b'</plist>')+8; plist=plistlib.loads(data[start:end]); plistlib.dump(plist['Entitlements'], open('/tmp/entitlements.plist','wb'))"
           
-          # 5. Resolve Signing Identity (Optimized for API Certs)
-          # We take the first available Development certificate. 
+          # 5. Dynamic Signing
           EXP_KEY=$(security find-identity -v -p codesigning | grep "Apple Development" | head -n 1 | awk -F'"' '{print $2}')
-          if [ -z "$EXP_KEY" ]; then
-            EXP_KEY=$(security find-identity -v -p codesigning | head -n 1 | awk -F'"' '{print $2}')
-          fi
           echo "Using Certificate: $EXP_KEY"
 
-          # 6. RECURSIVE SIGNING (Claude's fix + Hierarchy)
-          # A. Nested frameworks inside Plugins first
-          find "$APP/PlugIns" -name "*.framework" | while read f; do codesign --force --sign "$EXP_KEY" "$f"; done
-          # B. The .xctest plugins
-          find "$APP/PlugIns" -name "*.xctest" | while read f; do codesign --force --sign "$EXP_KEY" "$f"; done
-          # C. Top-level frameworks
-          find "$APP/Frameworks" -mindepth 1 -maxdepth 1 | while read f; do codesign --force --sign "$EXP_KEY" "$f"; done
-          # D. Parent App bundle last with entitlements
-          codesign --force --sign "$EXP_KEY" --entitlements /tmp/entitlements.plist "$APP"
+          # 6. Aggressive Recursive Signing
+          # Sign all nested content first
+          find "$APP" -depth -name "*.framework" -exec codesign --force --sign "$EXP_KEY" {} \;
+          find "$APP" -depth -name "*.xctest" -exec codesign --force --sign "$EXP_KEY" {} \;
+          find "$APP" -depth -name "*.dylib" -exec codesign --force --sign "$EXP_KEY" {} \;
+          
+          # Sign main bundle with deep verification
+          codesign --force --sign "$EXP_KEY" --entitlements /tmp/entitlements.plist --deep "$APP"
 
           codesign --verify --deep --verbose "$APP" && echo "SIGNATURE VALID"
 
