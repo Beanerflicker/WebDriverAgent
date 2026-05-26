@@ -1,5 +1,5 @@
-# Dynamic, Self-Healing codemagic.yaml
-# Features: Dynamic signing identity extraction, dynamic entitlements cloning, AMFI-compliant manual signing
+# Cross-Matched, Self-Healing codemagic.yaml
+# Features: Dynamic signing identity alignment, manual profile bundling, AMFI-compliant manual signing
 
 workflows:
   build-wda:
@@ -161,11 +161,17 @@ workflows:
 
           python3 /tmp/gen_entitlements.py "$APP/embedded.mobileprovision" /tmp/entitlements.plist
 
-          # 6. Dynamic Codesigning Identity Extraction
-          echo "Resolving signing identity from keychain..."
-          EXP_KEY=$(security find-identity -v -p codesigning | grep "Development" | head -n 1 | awk -F'"' '{print $2}')
+          # Extract Team ID from the generated entitlements to use for certificate filtering
+          TEAM_ID=$(python3 -c "import plistlib; p=plistlib.loads(open('/tmp/entitlements.plist','rb').read()); print(p.get('com.apple.developer.team-identifier',''))")
+          echo "Profile Team ID is: $TEAM_ID"
+
+          # 6. Dynamic Codesigning Identity Extraction (Filtered by Team ID)
+          echo "Resolving signing identity from keychain matching Team ID: $TEAM_ID..."
+          EXP_KEY=$(security find-identity -v -p codesigning | grep "$TEAM_ID" | head -n 1 | awk -F'"' '{print $2}')
+          
           if [ -z "$EXP_KEY" ]; then
-              EXP_KEY=$(security find-identity -v -p codesigning | head -n 1 | awk -F'"' '{print $2}')
+              echo "WARNING: No certificate matching $TEAM_ID found. Falling back to first available development certificate."
+              EXP_KEY=$(security find-identity -v -p codesigning | grep "Development" | head -n 1 | awk -F'"' '{print $2}')
           fi
 
           if [ -z "$EXP_KEY" ]; then
