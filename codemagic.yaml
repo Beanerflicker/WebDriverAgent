@@ -11,7 +11,16 @@ workflows:
       - name: Build WDA
         script: |
           set -e
-          # Building for testing generates both the Host (.app) and the Runner (.xctrunner)
+          # Phase 1: Build the Host App (provides the home screen icon)
+          xcodebuild build \
+            -project WebDriverAgent.xcodeproj \
+            -scheme WebDriverAgentRunner \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath ./build \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            CODE_SIGNING_ALLOWED=NO
+
+          # Phase 2: Build the Test Runner (.xctrunner)
           xcodebuild build-for-testing \
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner \
@@ -23,24 +32,26 @@ workflows:
       - name: Bundle and patch libraries
         script: |
           set -e
-          # 1. Define explicit paths to the build products
           PROD_DIR="./build/Build/Products/Debug-iphoneos"
-          RUNNER="$PROD_DIR/WebDriverAgentRunner-Runner.app"
-          HOST="$PROD_DIR/WebDriverAgentRunner.app"
           
-          if [ ! -d "$HOST" ]; then
-            echo "ERROR: Host app not found at $HOST. Attempting fallback find..."
-            HOST=$(find ./build -name "WebDriverAgentRunner.app" -not -path "*Runner.app*" | head -n 1)
+          # Explicitly locate products
+          RUNNER=$(find "$PROD_DIR" -name "WebDriverAgentRunner-Runner.app")
+          HOST=$(find "$PROD_DIR" -name "WebDriverAgentRunner.app")
+          
+          if [ -z "$HOST" ] || [ -z "$RUNNER" ]; then
+            echo "ERROR: Missing bundles. Host: [$HOST] Runner: [$RUNNER]"
+            ls -R "$PROD_DIR"
+            exit 1
           fi
-          
+
           echo "Using Runner: $RUNNER"
           echo "Using Host: $HOST"
 
-          # 2. CFBundleIdentifier Rewrite (Aligns both apps with your profiles)
+          # 1. Aligns Bundle IDs with your profiles
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.beanerflicker.WebDriverAgentRunner.xctrunner" "$RUNNER/Info.plist"
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.beanerflicker.WebDriverAgentRunner" "$HOST/Info.plist"
 
-          # 3. Patch Runner for iOS 26 compatibility
+          # 2. Patch Runner for iOS 26 compatibility
           XCODE_DEV=$(xcode-select -p)
           mkdir -p "$RUNNER/Frameworks"
           cp "$XCODE_DEV/Platforms/iPhoneOS.platform/Developer/usr/lib/lib_TestingInterop.dylib" "$RUNNER/Frameworks/"
@@ -58,7 +69,7 @@ workflows:
                   cmd, sz = struct.unpack("<II", data[cursor:cursor+8])
                   if cmd == 0x0c:
                       off = struct.unpack("<I", data[cursor+8:cursor+12])[0]
-                      name = data[cursor+off:cursor+sz].split(b"\00")[0]
+                      name = data[cursor+off:cursor+sz].split(b"\x00")[0]
                       if b"_Testing_Foundation" in name:
                           struct.pack_into("<I", data, cursor, 0x80000018)
                   cursor += sz
@@ -70,31 +81,27 @@ workflows:
           python3 /tmp/patch_weak.py "$RUNNER/Frameworks/XCTestCore.framework/XCTestCore"
           python3 /tmp/patch_weak.py "$RUNNER/WebDriverAgentRunner-Runner"
 
-          # 4. Identify Profiles and Certificate
+          # 3. Dynamic Signing
           EXP_KEY=$(security find-identity -v -p codesigning | grep "Apple Development" | head -n 1 | awk -F'"' '{print $2}')
-          echo "Using Certificate: $EXP_KEY"
-
-          # Function to extract entitlements and sign
+          
           sign_bundle() {
             local TARGET=$1
             local BUNDLE_ID=$2
-            # Find the specific profile matching this bundle ID
-            local PROFILE=$(find /Users/builder -name "*.mobileprovision" | while read p; do
-              if grep -q "$BUNDLE_ID" "$p"; then echo "$p"; break; fi
-            done)
+            # Match profile by Bundle ID string
+            local PROFILE=$(grep -l "$BUNDLE_ID" /Users/builder/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision | head -n 1)
             
             echo "Signing $TARGET with profile $PROFILE"
             cp "$PROFILE" "$TARGET/embedded.mobileprovision"
+            
+            # Generate Entitlements
             python3 -c "import plistlib; data=open('$TARGET/embedded.mobileprovision','rb').read(); start=data.find(b'<?xml'); end=data.find(b'</plist>')+8; plist=plistlib.loads(data[start:end]); plistlib.dump(plist['Entitlements'], open('/tmp/ent.plist','wb'))"
             
-            # Recursive Deep Signing
+            # Deep Signing
             find "$TARGET" -depth -name "*.framework" -exec codesign --force --sign "$EXP_KEY" {} \;
-            find "$TARGET" -depth -name "*.xctest" -exec codesign --force --sign "$EXP_KEY" {} \;
             find "$TARGET" -depth -name "*.dylib" -exec codesign --force --sign "$EXP_KEY" {} \;
-            codesign --force --sign "$EXP_KEY" --entitlements /tmp/ent.plist "$TARGET"
+            codesign --force --sign "$EXP_KEY" --entitlements /tmp/entitlements.plist "$TARGET"
           }
 
-          # Sign Host then Runner
           sign_bundle "$HOST" "com.beanerflicker.WebDriverAgentRunner"
           sign_bundle "$RUNNER" "com.beanerflicker.WebDriverAgentRunner.xctrunner"
 
