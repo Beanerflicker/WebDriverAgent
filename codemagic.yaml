@@ -25,37 +25,61 @@ workflows:
           APP=$(find ./build -name "WebDriverAgentRunner-Runner.app" | head -n 1)
           echo "App bundle found: $APP"
 
-          # 1. Copy lib_TestingInterop.dylib
+          # 1. Copy Interop Dylib
           XCODE_DEV=$(xcode-select -p)
           cp "$XCODE_DEV/Platforms/iPhoneOS.platform/Developer/usr/lib/lib_TestingInterop.dylib" "$APP/Frameworks/"
 
-          # 2. Bundle ID Rewrite (Crucial for launch registration)
+          # 2. CFBundleIdentifier Rewrite (The fix for "Did not find test app")
+          echo "Updating Bundle ID in Info.plist..."
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.beanerflicker.WebDriverAgentRunner.xctrunner" "$APP/Info.plist"
 
-          # 3. Weak-link patch for iOS 26 compatibility
-          echo "aW1wb3J0IHN0cnVjdCwgc3lzCmRlZiBwYXRjaF93ZWFrKGZwKToKICAgIHdpdGggb3BlbihmcCwgInJiIikgYXMfZjoKICAgICAgICBkYXRhID0gYnl0ZWFycmF5KF9mLnJlYWQoKSkKICAgIG1hZ2ljID0gc3RydWN0LnVucGFja19mcm9tKCI8SSIsIGRhdGEsIDApWzBdCiAgICBpZiBtYWdpYyAhPSAweEZFRURGQUNGOiByZXR1cm4KICAgIG5jbWRzID0gc3RydWN0LnVucGFja19mcm9tKCI8SSIsIGRhdGEsIDE2KVswXQogICAgY3Vyc29yID0gMzIKICAgIGZvciBfIGluIHJhbmdlKG5jbWRzKToKICAgICAgICBjbWQsIHN6ID0gc3RydWN0LnVucGFja19mcm9tKCI8SUkiLCBkYXRhLCBjdXJzb3IpCiAgICAgICAgaWYgY21kID09IDB4MGM6CiAgICAgICAgICAgIG9mZiA9IHN0cnVjdC51bnBhY2tfZnJvbSgiPEkiLCBkYXRhLCBjdXJzb3IrOClbMF0KICAgICAgICAgICAgbmFtZSA9IGRhdGFbY3Vyc29yK29mZjpjdXJzb3Irc3pdLnNwbGl0KGIiXDAiKVswXQogICAgICAgICAgICBpZiBiIl9UZXN0aW5nX0ZvdW5kYXRpb24iIGluIG5hbWU6CiAgICAgICAgICAgICAgICBzdHJ1Y3QucGFja19pbnRvKCI8SSIsIGRhdGEsIGN1cnNvciwgMHg4MDAwMDAxOCkKICAgICAgICBjdXJzb3IgKz0gc3oKICAgIHdpdGggb3BlbihmcCwgIndiIikgYXMfZjogX2Yud3JpdGUoZGF0YSkKICAgIHByaW50KGYiUGF0Y2hlZCB7ZnB9IikKcGF0Y2hfd2VhayhzeXMuYXJndlsxXSk=" | base64 -d > /tmp/patch_weak.py
+          # 3. Create Weak-Link Patch Script (Plain text to avoid character errors)
+          cat << 'EOF' > /tmp/patch_weak.py
+          import struct, sys
+          def patch(fp):
+              with open(fp, "rb") as f:
+                  data = bytearray(f.read())
+              magic = struct.unpack("<I", data[:4])[0]
+              if magic != 0xFEEDFACF: return
+              ncmds = struct.unpack("<I", data[16:20])[0]
+              cursor = 32
+              for _ in range(ncmds):
+                  cmd, sz = struct.unpack("<II", data[cursor:cursor+8])
+                  if cmd == 0x0c:
+                      off = struct.unpack("<I", data[cursor+8:cursor+12])[0]
+                      name = data[cursor+off:cursor+sz].split(b"\x00")[0]
+                      if b"_Testing_Foundation" in name:
+                          struct.pack_into("<I", data, cursor, 0x80000018)
+                  cursor += sz
+              with open(fp, "wb") as f:
+                  f.write(data)
+              print(f"Patched: {fp}")
+          if __name__ == "__main__":
+              patch(sys.argv[1])
+          EOF
+
           python3 /tmp/patch_weak.py "$APP/Frameworks/libXCTestSwiftSupport.dylib"
 
-          # 4. Generate dynamic entitlements from Codemagic-provided profile
+          # 4. Handle Provisioning Profile and Entitlements
           PROV_PROFILE=$(find /Users/builder -name "*.mobileprovision" | head -n 1)
           cp "$PROV_PROFILE" "$APP/embedded.mobileprovision"
+          
+          # Extract Entitlements
           python3 -c "import plistlib; data=open('$APP/embedded.mobileprovision','rb').read(); start=data.find(b'<?xml'); end=data.find(b'</plist>')+8; plist=plistlib.loads(data[start:end]); plistlib.dump(plist['Entitlements'], open('/tmp/entitlements.plist','wb'))"
-
-          # 5. Resolve Signing Identity
+          
+          # 5. Find Team ID and Signing Key
           TEAM_ID=$(python3 -c "import plistlib; p=plistlib.loads(open('/tmp/entitlements.plist','rb').read()); print(p.get('com.apple.developer.team-identifier',''))")
           EXP_KEY=$(security find-identity -v -p codesigning | grep "$TEAM_ID" | head -n 1 | awk -F'"' '{print $2}')
           echo "Using Certificate: $EXP_KEY"
 
-          # 6. RECURSIVE SIGNING PHASE
-          # A. Dynamic Libraries
-          find "$APP" -name "*.dylib" | while read f; do codesign --force --sign "$EXP_KEY" "$f"; done
-          # B. Top-level Frameworks
-          find "$APP/Frameworks" -maxdepth 1 -name "*.framework" | while read f; do codesign --force --sign "$EXP_KEY" "$f"; done
-          # C. Nested Frameworks inside PlugIns (Crucial fix!)
+          # 6. RECURSIVE SIGNING (The "Inside-Out" fix)
+          # Sign nested frameworks inside Plugins first (Claude's fix)
           find "$APP/PlugIns" -name "*.framework" | while read f; do codesign --force --sign "$EXP_KEY" "$f"; done
-          # D. Plugins (.xctest bundles)
-          find "$APP/PlugIns" -maxdepth 1 -name "*.xctest" | while read f; do codesign --force --sign "$EXP_KEY" "$f"; done
-          # E. Parent App Bundle
+          # Sign the .xctest plugins themselves
+          find "$APP/PlugIns" -name "*.xctest" | while read f; do codesign --force --sign "$EXP_KEY" "$f"; done
+          # Sign top-level frameworks
+          find "$APP/Frameworks" -mindepth 1 -maxdepth 1 | while read f; do codesign --force --sign "$EXP_KEY" "$f"; done
+          # Sign main bundle last
           codesign --force --sign "$EXP_KEY" --entitlements /tmp/entitlements.plist "$APP"
 
           codesign --verify --verbose "$APP" && echo "SIGNATURE VALID"
