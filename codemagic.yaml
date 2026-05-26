@@ -30,15 +30,15 @@ workflows:
           cp "$XCODE_DEV/Platforms/iPhoneOS.platform/Developer/usr/lib/lib_TestingInterop.dylib" "$APP/Frameworks/"
 
           # 2. CFBundleIdentifier Rewrite (The fix for "Did not find test app")
-          echo "Updating Bundle ID in Info.plist..."
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.beanerflicker.WebDriverAgentRunner.xctrunner" "$APP/Info.plist"
 
-          # 3. Create Weak-Link Patch Script (Plain text to avoid character errors)
+          # 3. Create Weak-Link Patch Script
           cat << 'EOF' > /tmp/patch_weak.py
           import struct, sys
           def patch(fp):
               with open(fp, "rb") as f:
                   data = bytearray(f.read())
+              if len(data) < 4: return
               magic = struct.unpack("<I", data[:4])[0]
               if magic != 0xFEEDFACF: return
               ncmds = struct.unpack("<I", data[16:20])[0]
@@ -53,36 +53,36 @@ workflows:
                   cursor += sz
               with open(fp, "wb") as f:
                   f.write(data)
-              print(f"Patched: {fp}")
           if __name__ == "__main__":
               patch(sys.argv[1])
           EOF
 
           python3 /tmp/patch_weak.py "$APP/Frameworks/libXCTestSwiftSupport.dylib"
 
-          # 4. Handle Provisioning Profile and Entitlements
+          # 4. Extract Entitlements
           PROV_PROFILE=$(find /Users/builder -name "*.mobileprovision" | head -n 1)
           cp "$PROV_PROFILE" "$APP/embedded.mobileprovision"
-          
-          # Extract Entitlements
           python3 -c "import plistlib; data=open('$APP/embedded.mobileprovision','rb').read(); start=data.find(b'<?xml'); end=data.find(b'</plist>')+8; plist=plistlib.loads(data[start:end]); plistlib.dump(plist['Entitlements'], open('/tmp/entitlements.plist','wb'))"
           
-          # 5. Find Team ID and Signing Key
-          TEAM_ID=$(python3 -c "import plistlib; p=plistlib.loads(open('/tmp/entitlements.plist','rb').read()); print(p.get('com.apple.developer.team-identifier',''))")
-          EXP_KEY=$(security find-identity -v -p codesigning | grep "$TEAM_ID" | head -n 1 | awk -F'"' '{print $2}')
+          # 5. Resolve Signing Identity (Optimized for API Certs)
+          # We take the first available Development certificate. 
+          EXP_KEY=$(security find-identity -v -p codesigning | grep "Apple Development" | head -n 1 | awk -F'"' '{print $2}')
+          if [ -z "$EXP_KEY" ]; then
+            EXP_KEY=$(security find-identity -v -p codesigning | head -n 1 | awk -F'"' '{print $2}')
+          fi
           echo "Using Certificate: $EXP_KEY"
 
-          # 6. RECURSIVE SIGNING (The "Inside-Out" fix)
-          # Sign nested frameworks inside Plugins first (Claude's fix)
+          # 6. RECURSIVE SIGNING (Claude's fix + Hierarchy)
+          # A. Nested frameworks inside Plugins first
           find "$APP/PlugIns" -name "*.framework" | while read f; do codesign --force --sign "$EXP_KEY" "$f"; done
-          # Sign the .xctest plugins themselves
+          # B. The .xctest plugins
           find "$APP/PlugIns" -name "*.xctest" | while read f; do codesign --force --sign "$EXP_KEY" "$f"; done
-          # Sign top-level frameworks
+          # C. Top-level frameworks
           find "$APP/Frameworks" -mindepth 1 -maxdepth 1 | while read f; do codesign --force --sign "$EXP_KEY" "$f"; done
-          # Sign main bundle last
+          # D. Parent App bundle last with entitlements
           codesign --force --sign "$EXP_KEY" --entitlements /tmp/entitlements.plist "$APP"
 
-          codesign --verify --verbose "$APP" && echo "SIGNATURE VALID"
+          codesign --verify --deep --verbose "$APP" && echo "SIGNATURE VALID"
 
       - name: Package IPA
         script: |
