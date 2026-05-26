@@ -1,5 +1,5 @@
-# Cross-Matched, Self-Healing codemagic.yaml
-# Features: Dynamic signing identity alignment, manual profile bundling, AMFI-compliant manual signing
+# Definitive Corrected codemagic.yaml
+# Features: Compile-time check bypass, Info.plist bundle ID rewrite, dynamic certificate lookup, manual profile bundling
 
 workflows:
   build-wda:
@@ -112,7 +112,32 @@ workflows:
           python3 /tmp/patch_weak.py "$APP/Frameworks/XCTestCore.framework/XCTestCore" || true
           python3 /tmp/patch_weak.py "$APP/WebDriverAgentRunner-Runner" || true
 
-          # 4. Extract and manually bundle the retrieved provisioning profile
+          # 4. Generate Entitlements Plist
+          cat << 'PYEOF' > /tmp/entitlements.plist
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>application-identifier</key>
+              <string>34QXW692J2.com.beanerflicker.WebDriverAgentRunner.xctrunner</string>
+              <key>com.apple.developer.team-identifier</key>
+              <string>34QXW692J2</string>
+              <key>get-task-allow</key>
+              <true/>
+              <key>keychain-access-groups</key>
+              <array>
+                  <string>34QXW692J2.*</string>
+                  <string>com.apple.token</string>
+              </array>
+          </dict>
+          </plist>
+          PYEOF
+
+          # 4.5 Force update the CFBundleIdentifier in the Info.plist to match our paid profile
+          echo "Rewriting Info.plist bundle ID..."
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.beanerflicker.WebDriverAgentRunner.xctrunner" "$APP/Info.plist"
+
+          # 5. Extract and manually bundle the retrieved provisioning profile
           PROV_PROFILE=$(find "$HOME/Library/MobileDevice/Provisioning Profiles" -name "*.mobileprovision" | head -n 1)
           if [ -z "$PROV_PROFILE" ]; then
               PROV_PROFILE=$(find /Users/builder -name "*.mobileprovision" | head -n 1)
@@ -126,46 +151,8 @@ workflows:
               exit 1
           fi
 
-          # 5. Dynamically clone the exact entitlements dictionary from the profile
-          cat << 'PYEOF' > /tmp/gen_entitlements.py
-          import sys
-          import plistlib
-
-          def main():
-              prov_path = sys.argv[1]
-              out_path = sys.argv[2]
-              
-              with open(prov_path, 'rb') as f:
-                  data = f.read()
-                  
-              start = data.find(b'<?xml')
-              end = data.find(b'</plist>') + 8
-              if start == -1 or end == -1:
-                  print("ERROR: Could not parse XML from provisioning profile")
-                  sys.exit(1)
-                  
-              plist_data = data[start:end]
-              profile = plistlib.loads(plist_data)
-              
-              # Extract entitlements directly
-              entitlements = profile.get('Entitlements', {})
-              
-              with open(out_path, 'wb') as f:
-                  plistlib.dump(entitlements, f)
-                  
-              print(f"Entitlements generated from profile: {entitlements.get('application-identifier')}")
-
-          if __name__ == '__main__':
-              main()
-          PYEOF
-
-          python3 /tmp/gen_entitlements.py "$APP/embedded.mobileprovision" /tmp/entitlements.plist
-
-          # Extract Team ID from the generated entitlements to use for certificate filtering
-          TEAM_ID=$(python3 -c "import plistlib; p=plistlib.loads(open('/tmp/entitlements.plist','rb').read()); print(p.get('com.apple.developer.team-identifier',''))")
-          echo "Profile Team ID is: $TEAM_ID"
-
           # 6. Dynamic Codesigning Identity Extraction (Filtered by Team ID)
+          TEAM_ID=$(python3 -c "import plistlib; p=plistlib.loads(open('/tmp/entitlements.plist','rb').read()); print(p.get('com.apple.developer.team-identifier',''))")
           echo "Resolving signing identity from keychain matching Team ID: $TEAM_ID..."
           EXP_KEY=$(security find-identity -v -p codesigning | grep "$TEAM_ID" | head -n 1 | awk -F'"' '{print $2}')
           
