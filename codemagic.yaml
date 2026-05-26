@@ -11,7 +11,7 @@ workflows:
       - name: Build WDA
         script: |
           set -e
-          # Build the runner bundle
+          # Compile the test runner binary without signing
           xcodebuild build-for-testing \
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner \
@@ -23,22 +23,26 @@ workflows:
       - name: Bundle and patch libraries
         script: |
           set -e
-          # 1. Locate the bundle dynamically
+          # 1. Locate the compiled app bundle
           APP=$(find ./build/Build/Products/Debug-iphoneos -name "*.app" | head -n 1)
-          if [ -z "$APP" ]; then echo "ERROR: No .app found"; exit 1; fi
-          echo "Processing bundle: $APP"
+          if [ -z "$APP" ]; then 
+            echo "[-] ERROR: No .app bundle found in build products"
+            exit 1
+          fi
+          echo "[+] Processing bundle path: $APP"
 
-          # 2. TRANSFORM RUNNER INTO HOST APP (Force Icon Visibility)
-          echo "Injecting Foreground Application flags..."
+          # 2. Inject foreground app execution flags to allow icon visibility
+          echo "[*] Injecting Foreground Application flags..."
           /usr/libexec/PlistBuddy -c "Set :CFBundlePackageType APPL" "$APP/Info.plist" || /usr/libexec/PlistBuddy -c "Add :CFBundlePackageType string APPL" "$APP/Info.plist"
           /usr/libexec/PlistBuddy -c "Delete :LSBackgroundOnly" "$APP/Info.plist" || true
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.beanerflicker.WebDriverAgentRunner.xctrunner" "$APP/Info.plist"
 
-          # 3. iOS 26 compatibility patches
+          # 3. Apply iOS compatibility patches
           XCODE_DEV=$(xcode-select -p)
           mkdir -p "$APP/Frameworks"
           cp "$XCODE_DEV/Platforms/iPhoneOS.platform/Developer/usr/lib/lib_TestingInterop.dylib" "$APP/Frameworks/"
           
+          # Inline Python script to patch weak linkages of _Testing_Foundation
           cat << 'EOF' > /tmp/patch_weak.py
           import struct, sys, os
           def patch(fp):
@@ -57,34 +61,77 @@ workflows:
               with open(fp, "wb") as f: f.write(d)
           patch(sys.argv[1])
           EOF
+          
           python3 /tmp/patch_weak.py "$APP/Frameworks/libXCTestSwiftSupport.dylib"
           python3 /tmp/patch_weak.py "$APP/Frameworks/XCTestCore.framework/XCTestCore"
           python3 /tmp/patch_weak.py "$APP/WebDriverAgentRunner-Runner" || true
           python3 /tmp/patch_weak.py "$APP/WebDriverAgentRunner" || true
 
-          # 4. Signing Identity and Entitlements
+          # 4. Resolve Signing Identity and Provisioning Assets
           EXP_KEY=$(security find-identity -v -p codesigning | grep "Development" | head -n 1 | awk -F'"' '{print $2}')
-          echo "Using Certificate: $EXP_KEY"
+          echo "[+] Resolved Certificate: $EXP_KEY"
 
-          # Match the runner profile provided by Codemagic
           PROF=$(grep -l "com.beanerflicker.WebDriverAgentRunner.xctrunner" /Users/builder/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision | head -n 1)
           cp "$PROF" "$APP/embedded.mobileprovision"
+          echo "[+] Resolved Provisioning Profile: $PROF"
           
-          # Extract entitlements
+          # Extract entitlement schema from profile payload
           python3 -c "import plistlib; data=open('$APP/embedded.mobileprovision','rb').read(); start=data.find(b'<?xml'); end=data.find(b'</plist>')+8; plist=plistlib.loads(data[start:end]); plistlib.dump(plist['Entitlements'], open('/tmp/entitlements.plist','wb'))"
 
-          # 5. Recursive Deep Signing
-          find "$APP" -depth -name "*.framework" -exec codesign --force --sign "$EXP_KEY" {} \;
-          find "$APP" -depth -name "*.xctest" -exec codesign --force --sign "$EXP_KEY" {} \;
-          find "$APP" -depth -name "*.dylib" -exec codesign --force --sign "$EXP_KEY" {} \;
+          # 5. Strict Leaf-To-Root Code Signing (Inside-Out)
           
-          # Final sign with entitlements
-          codesign --force --sign "$EXP_KEY" --entitlements /tmp/entitlements.plist --deep "$APP"
+          # Step A: Sign deep nested libraries inside xctest bundles first (WITHOUT entitlements)
+          XCT_FRAMEWORKS="$APP/PlugIns/WebDriverAgentRunner.xctest/Frameworks"
+          if [ -d "$XCT_FRAMEWORKS" ]; then
+              echo "[*] Signing nested framework dependencies in XCTest folder..."
+              find "$XCT_FRAMEWORKS" -type f \( -name "*.dylib" -o -name "WebDriverAgentLib" \) | while read -r lib; do
+                  echo "Signing nested leaf library: $lib"
+                  codesign --force --sign "$EXP_KEY" --timestamp=none "$lib"
+              done
+              find "$XCT_FRAMEWORKS" -name "*.framework" | while read -r fw; do
+                  echo "Signing nested framework: $fw"
+                  codesign --force --sign "$EXP_KEY" --timestamp=none "$fw"
+              done
+          fi
+
+          # Step B: Sign XCTest plug-in container (WITHOUT entitlements)
+          XCT_PLUGINS="$APP/PlugIns"
+          if [ -d "$XCT_PLUGINS" ]; then
+              echo "[*] Signing XCTest plugins..."
+              find "$XCT_PLUGINS" -name "*.xctest" | while read -r plugin; do
+                  echo "Signing plugin bundle: $plugin"
+                  codesign --force --sign "$EXP_KEY" --timestamp=none "$plugin"
+              done
+          fi
+
+          # Step C: Sign root framework folder contents (WITHOUT entitlements)
+          APP_FRAMEWORKS="$APP/Frameworks"
+          if [ -d "$APP_FRAMEWORKS" ]; then
+              echo "[*] Signing application level frameworks..."
+              find "$APP_FRAMEWORKS" -type f -name "*.dylib" | while read -r dylib; do
+                  echo "Signing application dylib: $dylib"
+                  codesign --force --sign "$EXP_KEY" --timestamp=none "$dylib"
+              done
+              find "$APP_FRAMEWORKS" -name "*.framework" | while read -r framework; do
+                  echo "Signing application framework: $framework"
+                  codesign --force --sign "$EXP_KEY" --timestamp=none "$framework"
+              done
+          fi
+
+          # Step D: Sign primary application container executable (WITH entitlements)
+          echo "[*] Signing primary application bundle..."
+          codesign --force --sign "$EXP_KEY" --entitlements /tmp/entitlements.plist --timestamp=none "$APP"
+          
+          echo "[+] Code-signing phase completed."
 
       - name: Package IPA
         script: |
+          set -e
+          # Construct deployment package containing only the targeted app
+          APP=$(find ./build/Build/Products/Debug-iphoneos -name "*.app" | head -n 1)
           mkdir -p Payload
-          cp -r ./build/Build/Products/Debug-iphoneos/*.app Payload/
+          cp -r "$APP" Payload/
           zip -r WebDriverAgent.ipa Payload
+          echo "[+] Packaging completed successfully."
     artifacts:
       - WebDriverAgent.ipa
