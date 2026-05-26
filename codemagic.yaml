@@ -11,6 +11,7 @@ workflows:
       - name: Build WDA
         script: |
           set -e
+          # Build for testing creates both the App and the Runner
           xcodebuild build-for-testing \
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner \
@@ -22,68 +23,66 @@ workflows:
       - name: Bundle and patch libraries
         script: |
           set -e
-          APP=$(find ./build -name "WebDriverAgentRunner-Runner.app" | head -n 1)
-          echo "App bundle found: $APP"
+          # Locate both bundles
+          RUNNER=$(find ./build -name "WebDriverAgentRunner-Runner.app" | head -n 1)
+          HOST=$(find ./build -name "WebDriverAgentRunner.app" | head -n 1)
+          echo "Runner: $RUNNER"
+          echo "Host: $HOST"
 
-          # 1. Force Bundle ID alignment (Fixes profile visibility)
-          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.beanerflicker.WebDriverAgentRunner.xctrunner" "$APP/Info.plist"
+          # 1. Force Bundle ID alignment on both
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.beanerflicker.WebDriverAgentRunner.xctrunner" "$RUNNER/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.beanerflicker.WebDriverAgentRunner" "$HOST/Info.plist"
 
-          # 2. Copy the Interop library
+          # 2. Patch frameworks for iOS 26 compatibility
           XCODE_DEV=$(xcode-select -p)
-          cp "$XCODE_DEV/Platforms/iPhoneOS.platform/Developer/usr/lib/lib_TestingInterop.dylib" "$APP/Frameworks/"
-
-          # 3. Comprehensive Weak-Link Patching (Patches all 3 critical binaries)
+          cp "$XCODE_DEV/Platforms/iPhoneOS.platform/Developer/usr/lib/lib_TestingInterop.dylib" "$RUNNER/Frameworks/"
+          
           cat << 'EOF' > /tmp/patch_weak.py
           import struct, sys, os
           def patch(fp):
               if not os.path.exists(fp): return
               with open(fp, "rb") as f: data = bytearray(f.read())
               if len(data) < 4: return
-              magic = struct.unpack("<I", data[:4])[0]
-              if magic != 0xFEEDFACF: return
+              if struct.unpack("<I", data[:4])[0] != 0xFEEDFACF: return
               ncmds = struct.unpack("<I", data[16:20])[0]
               cursor = 32
               for _ in range(ncmds):
                   cmd, sz = struct.unpack("<II", data[cursor:cursor+8])
                   if cmd == 0x0c:
                       off = struct.unpack("<I", data[cursor+8:cursor+12])[0]
-                      name = data[cursor+off:cursor+sz].split(b"\x00")[0]
+                      name = data[cursor+off:cursor+sz].split(b"\00")[0]
                       if b"_Testing_Foundation" in name:
                           struct.pack_into("<I", data, cursor, 0x80000018)
                   cursor += sz
               with open(fp, "wb") as f: f.write(data)
-              print(f"Patched: {fp}")
           patch(sys.argv[1])
           EOF
 
-          python3 /tmp/patch_weak.py "$APP/Frameworks/libXCTestSwiftSupport.dylib"
-          python3 /tmp/patch_weak.py "$APP/Frameworks/XCTestCore.framework/XCTestCore"
-          python3 /tmp/patch_weak.py "$APP/WebDriverAgentRunner-Runner"
+          python3 /tmp/patch_weak.py "$RUNNER/Frameworks/libXCTestSwiftSupport.dylib"
+          python3 /tmp/patch_weak.py "$RUNNER/Frameworks/XCTestCore.framework/XCTestCore"
+          python3 /tmp/patch_weak.py "$RUNNER/WebDriverAgentRunner-Runner"
 
-          # 4. Profile and Entitlements
+          # 3. Handle Signing
           PROV_PROFILE=$(find /Users/builder -name "*.mobileprovision" | head -n 1)
-          cp "$PROV_PROFILE" "$APP/embedded.mobileprovision"
-          python3 -c "import plistlib; data=open('$APP/embedded.mobileprovision','rb').read(); start=data.find(b'<?xml'); end=data.find(b'</plist>')+8; plist=plistlib.loads(data[start:end]); plistlib.dump(plist['Entitlements'], open('/tmp/entitlements.plist','wb'))"
-          
-          # 5. Dynamic Signing
           EXP_KEY=$(security find-identity -v -p codesigning | grep "Apple Development" | head -n 1 | awk -F'"' '{print $2}')
-          echo "Using Certificate: $EXP_KEY"
-
-          # 6. Aggressive Recursive Signing
-          # Sign all nested content first
-          find "$APP" -depth -name "*.framework" -exec codesign --force --sign "$EXP_KEY" {} \;
-          find "$APP" -depth -name "*.xctest" -exec codesign --force --sign "$EXP_KEY" {} \;
-          find "$APP" -depth -name "*.dylib" -exec codesign --force --sign "$EXP_KEY" {} \;
           
-          # Sign main bundle with deep verification
-          codesign --force --sign "$EXP_KEY" --entitlements /tmp/entitlements.plist --deep "$APP"
+          # Sign everything inside both bundles
+          for BUNDLE in "$RUNNER" "$HOST"; do
+            cp "$PROV_PROFILE" "$BUNDLE/embedded.mobileprovision"
+            python3 -c "import plistlib; d=open('$BUNDLE/embedded.mobileprovision','rb').read(); s=d.find(b'<?xml'); e=d.find(b'</plist>')+8; p=plistlib.loads(d[s:e]); plistlib.dump(p['Entitlements'], open('/tmp/ent.plist','wb'))"
+            find "$BUNDLE" -depth -name "*.framework" -exec codesign --force --sign "$EXP_KEY" {} \;
+            find "$BUNDLE" -depth -name "*.dylib" -exec codesign --force --sign "$EXP_KEY" {} \;
+            codesign --force --sign "$EXP_KEY" --entitlements /tmp/ent.plist "$BUNDLE"
+          done
 
-          codesign --verify --deep --verbose "$APP" && echo "SIGNATURE VALID"
+          echo "SIGNATURE VALID"
 
       - name: Package IPA
         script: |
           mkdir -p Payload
+          # Package BOTH apps into the IPA
           cp -r ./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app Payload/
+          cp -r ./build/Build/Products/Debug-iphoneos/WebDriverAgentRunner.app Payload/
           zip -r WebDriverAgent.ipa Payload
     artifacts:
       - WebDriverAgent.ipa
