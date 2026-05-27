@@ -11,14 +11,15 @@ workflows:
       - name: Build WDA
         script: |
           set -e
-          # Compile the test runner binary without signing
+          # Compile the test runner binary, forcing weak framework linkage via OTHER_LDFLAGS
           xcodebuild build-for-testing \
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner \
             -destination "generic/platform=iOS" \
             -derivedDataPath ./build \
             COMPILER_INDEX_STORE_ENABLE=NO \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO \
+            OTHER_LDFLAGS="-weak_framework XCTest -weak_framework XCTestCore -weak_framework XCTestSupport -weak_framework XCTAutomationSupport -weak_framework XCUIAutomation -weak_framework XCUnit"
 
       - name: Bundle and patch libraries
         script: |
@@ -42,8 +43,7 @@ workflows:
           mkdir -p "$APP/Frameworks"
           cp "$XCODE_DEV/Platforms/iPhoneOS.platform/Developer/usr/lib/lib_TestingInterop.dylib" "$APP/Frameworks/"
           
-          # Inline Fat-Binary Aware Python patch script
-          # Recursively scans the compiled .app bundle and patches ALL Mach-O executables
+          # Inline Fat-Binary Aware Python patch script for libXCTestSwiftSupport lazy bindings
           cat << 'EOF' > /tmp/patch_weak.py
           import struct, sys, os
           
@@ -73,41 +73,6 @@ workflows:
                   cursor += sz
               if patched:
                   print(f"[+] Patched lazy binding inside slice at offset {offset} for {fp}")
-
-              # Patch Symbol Table
-              cursor = 32
-              symoff, nsyms, stroff, strsize = 0, 0, 0, 0
-              for _ in range(ncmds):
-                  if cursor + 8 > len(slice_d): break
-                  cmd, sz = struct.unpack("<II", slice_d[cursor:cursor+8])
-                  if cmd == 0x02: # LC_SYMTAB
-                      symoff, nsyms, stroff, strsize = struct.unpack("<IIII", slice_d[cursor+8:cursor+24])
-                      break
-                  cursor += sz
-                  
-              if nsyms > 0 and symoff > 0:
-                  match_count = 0
-                  for i in range(nsyms):
-                      entry_offset = symoff + (i * 16)
-                      if entry_offset + 16 > len(slice_d): break
-                      n_strx = struct.unpack("<I", slice_d[entry_offset:entry_offset+4])[0]
-                      if n_strx == 0 or n_strx >= strsize: continue
-                      
-                      str_start = stroff + n_strx
-                      str_end = slice_d.find(b"\00", str_start)
-                      if str_end == -1: continue
-                      symbol_name = slice_d[str_start:str_end]
-                      
-                      if b"XCTCommandLineToolHelper" in symbol_name:
-                          n_desc = struct.unpack("<H", slice_d[entry_offset+6:entry_offset+8])[0]
-                          if not (n_desc & 0x0040):
-                              n_desc |= 0x0040 # Set N_WEAK_REF
-                              struct.pack_into("<H", slice_d, entry_offset+6, n_desc)
-                              print(f"[+] Weakened symbol reference: {symbol_name.decode()} inside slice at offset {offset} in {fp}")
-                              match_count += 1
-                              patched = True
-                              
-              if patched:
                   d[offset:offset+size] = slice_d
                   return True
               return False
