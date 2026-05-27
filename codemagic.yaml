@@ -8,6 +8,18 @@ workflows:
         distribution_type: development
         bundle_identifier: com.beanerflicker.WebDriverAgentRunner.xctrunner
     scripts:
+      - name: Patch Source Code References
+        script: |
+          set -e
+          echo "[*] Scanning codebase for obsolete private XCTest references..."
+          # Recursively find any references to XCTCommandLineToolHelper and swap with NSObject
+          find . -type f \( -name "*.m" -o -name "*.h" -o -name "*.swift" \) | while read -r file; do
+              if grep -q "XCTCommandLineToolHelper" "$file"; then
+                  echo "[+] Patching legacy class reference in: $file"
+                  sed -i '' 's/XCTCommandLineToolHelper/NSObject/g' "$file"
+              fi
+          done
+
       - name: Build WDA
         script: |
           set -e
@@ -42,30 +54,28 @@ workflows:
           mkdir -p "$APP/Frameworks"
           cp "$XCODE_DEV/Platforms/iPhoneOS.platform/Developer/usr/lib/lib_TestingInterop.dylib" "$APP/Frameworks/"
           
-          # Inline Fat-Binary Aware Python patch script
+          # Inline Fat-Binary Aware Python patch script for libXCTestSwiftSupport lazy bindings
           cat << 'EOF' > /tmp/patch_weak.py
           import struct, sys, os
           
-          # Process individual Mach-O thin bytes extracted from the Fat container
           def patch_macho_bytes(d, offset, size, fp):
               slice_d = d[offset:offset+size]
               if len(slice_d) < 4: return False
               
               magic = struct.unpack("<I", slice_d[:4])[0]
               if magic != 0xFEEDFACF:
-                  # Skip if slice is not 64-bit Mach-O
                   return False
                   
               ncmds = struct.unpack("<I", slice_d[16:20])[0]
               cursor = 32
               patched = False
               
-              # Part A: Patch Lazy Binding for _Testing_Foundation
+              # Patch Lazy Binding for _Testing_Foundation
               for _ in range(ncmds):
                   if cursor + 8 > len(slice_d): break
                   cmd, sz = struct.unpack("<II", slice_d[cursor:cursor+8])
                   if cmd == 0x0c:
-                      off = struct.unpack("<I", slice_d[cursor+8:cursor+12])[0]
+                      off = struct.unpack("<I", d[cursor+8:cursor+12])[0]
                       name = slice_d[cursor+off:cursor+sz].split(b"\00")[0]
                       if b"_Testing_Foundation" in name:
                           struct.pack_into("<I", slice_d, cursor, 0x80000018)
@@ -73,42 +83,6 @@ workflows:
                   cursor += sz
               if patched:
                   print(f"[+] Patched lazy binding inside slice at offset {offset} for {fp}")
-
-              # Part B: Weaken private test symbols inside the slice
-              cursor = 32
-              symoff, nsyms, stroff, strsize = 0, 0, 0, 0
-              for _ in range(ncmds):
-                  if cursor + 8 > len(slice_d): break
-                  cmd, sz = struct.unpack("<II", slice_d[cursor:cursor+8])
-                  if cmd == 0x02: # LC_SYMTAB
-                      symoff, nsyms, stroff, strsize = struct.unpack("<IIII", slice_d[cursor+8:cursor+24])
-                      break
-                  cursor += sz
-                  
-              if nsyms > 0 and symoff > 0:
-                  match_count = 0
-                  for i in range(nsyms):
-                      entry_offset = symoff + (i * 16)
-                      if entry_offset + 16 > len(slice_d): break
-                      n_strx = struct.unpack("<I", slice_d[entry_offset:entry_offset+4])[0]
-                      if n_strx == 0 or n_strx >= strsize: continue
-                      
-                      str_start = stroff + n_strx
-                      str_end = slice_d.find(b"\00", str_start)
-                      if str_end == -1: continue
-                      symbol_name = slice_d[str_start:str_end]
-                      
-                      if b"XCTCommandLineToolHelper" in symbol_name:
-                          n_desc = struct.unpack("<H", slice_d[entry_offset+6:entry_offset+8])[0]
-                          if not (n_desc & 0x0040):
-                              n_desc |= 0x0040 # Set N_WEAK_REF
-                              struct.pack_into("<H", slice_d, entry_offset+6, n_desc)
-                              print(f"[+] Weakened symbol reference: {symbol_name.decode()} inside slice at offset {offset} in {fp}")
-                              match_count += 1
-                              patched = True
-                              
-              if patched:
-                  # Write patched segment back to memory slice
                   d[offset:offset+size] = slice_d
                   return True
               return False
@@ -130,14 +104,11 @@ workflows:
                   for i in range(nfat_arch):
                       arch_offset = 8 + (i * 20)
                       cputype, cpusubtype, offset, size, align = struct.unpack(">IIIII", d[arch_offset:arch_offset+20])
-                      # Process individual thin slices contained inside the Fat envelope
                       if patch_macho_bytes(d, offset, size, fp):
                           modified = True
                   if modified:
                       with open(fp, "wb") as f: f.write(d)
                       print(f"[+] Successfully wrote patched Fat binary back to {fp}")
-                  else:
-                      print(f"[-] No modifications needed for Fat binary: {fp}")
               else:
                   # Parse as standard thin 64-bit Mach-O
                   magic_thin = struct.unpack("<I", d[:4])[0]
@@ -146,8 +117,6 @@ workflows:
                       if patch_macho_bytes(d, 0, len(d), fp):
                           with open(fp, "wb") as f: f.write(d)
                           print(f"[+] Successfully wrote patched Thin binary to {fp}")
-                  else:
-                      print(f"[-] Unknown/Unsupported binary header format {hex(magic_thin)} in {fp}")
 
           target_file = sys.argv[1]
           patch_file(target_file)
@@ -156,8 +125,6 @@ workflows:
           # Execute patch scripts explicitly across compiled binary assets
           python3 /tmp/patch_weak.py "$APP/Frameworks/libXCTestSwiftSupport.dylib"
           python3 /tmp/patch_weak.py "$APP/Frameworks/XCTestCore.framework/XCTestCore"
-          python3 /tmp/patch_weak.py "$APP/WebDriverAgentRunner-Runner"
-          python3 /tmp/patch_weak.py "$APP/WebDriverAgentRunner" || true # Secondary fallback path
 
           # 4. Resolve Signing Identity and Provisioning Assets
           EXP_KEY=$(security find-identity -v -p codesigning | grep "Development" | head -n 1 | awk -F'"' '{print $2}')
@@ -207,6 +174,7 @@ workflows:
               find "$APP_FRAMEWORKS" -name "*.framework" | while read -r framework; do
                   echo "Signing application framework: $framework"
                   codesign --force --sign "$EXP_KEY" --timestamp=none "$framework"
+                  
               done
           fi
 
