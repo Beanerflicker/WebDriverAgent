@@ -43,9 +43,12 @@ workflows:
           cp "$XCODE_DEV/Platforms/iPhoneOS.platform/Developer/usr/lib/lib_TestingInterop.dylib" "$APP/Frameworks/"
           
           # Inline Python script to patch weak linkages of _Testing_Foundation
+          # and weaken missing Apple private XCTest framework symbols
           cat << 'EOF' > /tmp/patch_weak.py
           import struct, sys, os
-          def patch(fp):
+          
+          # Weak-link _Testing_Foundation lazy binding
+          def patch_lazy_binding(fp):
               if not os.path.exists(fp): return
               with open(fp, "rb") as f: d = bytearray(f.read())
               if len(d) < 4 or struct.unpack("<I", d[:4])[0] != 0xFEEDFACF: return
@@ -59,7 +62,45 @@ workflows:
                       if b"_Testing_Foundation" in name: struct.pack_into("<I", d, cursor, 0x80000018)
                   cursor += sz
               with open(fp, "wb") as f: f.write(d)
-          patch(sys.argv[1])
+
+          # Find target symbols in LC_SYMTAB and apply N_WEAK_REF (0x0040) to prevent dyld exit
+          def patch_weak_symbol(fp, symbol_name_bytes):
+              if not os.path.exists(fp): return
+              with open(fp, "rb") as f: d = bytearray(f.read())
+              if len(d) < 4 or struct.unpack("<I", d[:4])[0] != 0xFEEDFACF: return
+              ncmds = struct.unpack("<I", d[16:20])[0]
+              cursor = 32
+              symoff, nsyms, stroff, strsize = 0, 0, 0, 0
+              for _ in range(ncmds):
+                  cmd, sz = struct.unpack("<II", d[cursor:cursor+8])
+                  if cmd == 0x02: # LC_SYMTAB
+                      symoff, nsyms, stroff, strsize = struct.unpack("<IIII", d[cursor+8:cursor+24])
+                      break
+                  cursor += sz
+              if nsyms == 0 or symoff == 0: return
+              
+              for i in range(nsyms):
+                  entry_offset = symoff + (i * 16)
+                  n_strx = struct.unpack("<I", d[entry_offset:entry_offset+4])[0]
+                  if n_strx == 0 or n_strx >= strsize: continue
+                  
+                  str_start = stroff + n_strx
+                  str_end = d.find(b"\00", str_start)
+                  if str_end == -1: continue
+                  symbol_name = d[str_start:str_end]
+                  
+                  if symbol_name == symbol_name_bytes:
+                      n_desc = struct.unpack("<H", d[entry_offset+6:entry_offset+8])[0]
+                      n_desc |= 0x0040 # Set N_WEAK_REF bit
+                      struct.pack_into("<H", d, entry_offset+6, n_desc)
+                      print(f"[+] Weakened symbol reference: {symbol_name.decode()} in {fp}")
+                      
+              with open(fp, "wb") as f: f.write(d)
+
+          target_file = sys.argv[1]
+          patch_lazy_binding(target_file)
+          patch_weak_symbol(target_file, b"_OBJC_CLASS_$_XCTCommandLineToolHelper")
+          patch_weak_symbol(target_file, b"_OBJC_METACLASS_$_XCTCommandLineToolHelper")
           EOF
           
           python3 /tmp/patch_weak.py "$APP/Frameworks/libXCTestSwiftSupport.dylib"
