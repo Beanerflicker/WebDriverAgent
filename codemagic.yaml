@@ -43,7 +43,7 @@ workflows:
           cp "$XCODE_DEV/Platforms/iPhoneOS.platform/Developer/usr/lib/lib_TestingInterop.dylib" "$APP/Frameworks/"
           
           # Inline Python script to patch weak linkages of _Testing_Foundation
-          # and weaken missing Apple private XCTest framework symbols
+          # and weaken missing Apple private XCTest framework symbols via substring match
           cat << 'EOF' > /tmp/patch_weak.py
           import struct, sys, os
           
@@ -63,8 +63,8 @@ workflows:
                   cursor += sz
               with open(fp, "wb") as f: f.write(d)
 
-          # Find target symbols in LC_SYMTAB and apply N_WEAK_REF (0x0040) to prevent dyld exit
-          def patch_weak_symbol(fp, symbol_name_bytes):
+          # Find target symbols in LC_SYMTAB via substring match and apply N_WEAK_REF (0x0040)
+          def patch_weak_symbol(fp, symbol_substring_bytes):
               if not os.path.exists(fp): return
               with open(fp, "rb") as f: d = bytearray(f.read())
               if len(d) < 4 or struct.unpack("<I", d[:4])[0] != 0xFEEDFACF: return
@@ -89,7 +89,8 @@ workflows:
                   if str_end == -1: continue
                   symbol_name = d[str_start:str_end]
                   
-                  if symbol_name == symbol_name_bytes:
+                  # Use substring matching to catch single/double underscore variations
+                  if symbol_substring_bytes in symbol_name:
                       n_desc = struct.unpack("<H", d[entry_offset+6:entry_offset+8])[0]
                       n_desc |= 0x0040 # Set N_WEAK_REF bit
                       struct.pack_into("<H", d, entry_offset+6, n_desc)
@@ -99,8 +100,8 @@ workflows:
 
           target_file = sys.argv[1]
           patch_lazy_binding(target_file)
-          patch_weak_symbol(target_file, b"_OBJC_CLASS_$_XCTCommandLineToolHelper")
-          patch_weak_symbol(target_file, b"_OBJC_METACLASS_$_XCTCommandLineToolHelper")
+          # Weaken any symbol structures containing XCTCommandLineToolHelper
+          patch_weak_symbol(target_file, b"XCTCommandLineToolHelper")
           EOF
           
           python3 /tmp/patch_weak.py "$APP/Frameworks/libXCTestSwiftSupport.dylib"
