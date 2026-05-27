@@ -23,7 +23,7 @@ workflows:
       - name: Bundle and patch libraries
         script: |
           set -e
-          # 1. Locate the compiled app bundle
+          # 1. Locate the compiled app bundle dynamically
           APP=$(find ./build/Build/Products/Debug-iphoneos -name "*.app" | head -n 1)
           if [ -z "$APP" ]; then 
             echo "[-] ERROR: No .app bundle found in build products"
@@ -78,7 +78,7 @@ workflows:
           # Extract entitlement schema from profile payload
           python3 -c "import plistlib; data=open('$APP/embedded.mobileprovision','rb').read(); start=data.find(b'<?xml'); end=data.find(b'</plist>')+8; plist=plistlib.loads(data[start:end]); plistlib.dump(plist['Entitlements'], open('/tmp/entitlements.plist','wb'))"
 
-          # 5. Strict Leaf-To-Root Code Signing (Inside-Out)
+          # 5. Strict Leaf-To-Root Code Signing (Inside-Out Pattern)
           
           # Step A: Sign deep nested libraries inside xctest bundles first (WITHOUT entitlements)
           XCT_FRAMEWORKS="$APP/PlugIns/WebDriverAgentRunner.xctest/Frameworks"
@@ -118,7 +118,7 @@ workflows:
               done
           fi
 
-          # Step D: Sign primary application container executable (WITH entitlements)
+          # Step D: Sign primary application container executable (WITH entitlements, NO deep flag)
           echo "[*] Signing primary application bundle..."
           codesign --force --sign "$EXP_KEY" --entitlements /tmp/entitlements.plist --timestamp=none "$APP"
           
