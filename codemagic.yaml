@@ -11,15 +11,14 @@ workflows:
       - name: Build WDA
         script: |
           set -e
-          # Compile WDA, limiting weak framework linkage to public authorized interfaces
+          # Compile the test runner natively using the project's perfect internal linking
           xcodebuild build-for-testing \
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner \
             -destination "generic/platform=iOS" \
             -derivedDataPath ./build \
             COMPILER_INDEX_STORE_ENABLE=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            OTHER_LDFLAGS="-weak_framework XCTest -weak_framework XCTAutomationSupport -weak_framework XCUIAutomation"
+            CODE_SIGNING_ALLOWED=NO
 
       - name: Bundle and patch libraries
         script: |
