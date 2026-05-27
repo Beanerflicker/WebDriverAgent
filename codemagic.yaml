@@ -12,8 +12,8 @@ workflows:
         script: |
           set -e
           echo "[*] Scanning codebase for obsolete private XCTest references..."
-          # Recursively find any references to XCTCommandLineToolHelper and swap with NSObject
-          find . -type f \( -name "*.m" -o -name "*.h" -o -name "*.swift" \) | while read -r file; do
+          # Expanded search pattern to include Objective-C++ (.mm) source files
+          find . -type f \( -name "*.m" -o -name "*.mm" -o -name "*.h" -o -name "*.swift" \) | while read -r file; do
               if grep -q "XCTCommandLineToolHelper" "$file"; then
                   echo "[+] Patching legacy class reference in: $file"
                   sed -i '' 's/XCTCommandLineToolHelper/NSObject/g' "$file"
@@ -174,7 +174,6 @@ workflows:
               find "$APP_FRAMEWORKS" -name "*.framework" | while read -r framework; do
                   echo "Signing application framework: $framework"
                   codesign --force --sign "$EXP_KEY" --timestamp=none "$framework"
-                  
               done
           fi
 
