@@ -11,50 +11,53 @@ workflows:
       - name: Inject iOS 17+ Launch Compatibility Implementation
         script: |
           set -e
-          echo "[*] Locating target source files..."
-          
-          # Find test runner compilation target
+          echo "[*] Locating target test runner compilation source..."
           TARGET_M_FILE=$(find . -path "*WebDriverAgentRunner*/*" \( -name "UITestingUITests.m" -o -name "UITestingUITests.mm" \) | head -n 1)
-          # Find a primary library compilation target to ensure early initialization
-          LIB_M_FILE=$(find . -path "*WebDriverAgentLib*/*" -name "WDAConfiguration.m" | head -n 1)
-          if [ -z "$LIB_M_FILE" ]; then
-              LIB_M_FILE=$(find . -path "*WebDriverAgentLib*/*" -name "*.m" | head -n 1)
+          if [ -z "$TARGET_M_FILE" ]; then
+              echo "[!] Warning: UITestingUITests.m not found. Searching for any runner source..."
+              TARGET_M_FILE=$(find . -path "*WebDriverAgentRunner*/*" -name "*.m" | head -n 1)
           fi
-
-          STUB_CODE=$(cat << 'EOF'
+          if [ -z "$TARGET_M_FILE" ]; then
+              echo "[-] Error: No compiled source targets inside WebDriverAgentRunner folder."
+              exit 1
+          fi
+          echo "[+] Injecting dynamic Obj-C runtime stub into: $TARGET_M_FILE"
+          cat << 'EOF' >> "$TARGET_M_FILE"
 
           // =========================================================================
-          // WebDriverAgent iOS 17+ Launch Compatibility Implementation
+          // WebDriverAgent iOS 17+ Launch Compatibility Dynamic Injection
           // =========================================================================
+          #import <objc/runtime.h>
+          #import <objc/message.h>
           #import <Foundation/Foundation.h>
 
-          @interface XCTCommandLineToolHelper : NSObject
-          + (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id __autoreleasing *)arg4;
-          @end
-
-          @implementation XCTCommandLineToolHelper
-          + (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id __autoreleasing *)arg4 {
-              NSLog(@"[+] WDA Launch Stub: configurationFromCommandLineArguments invoked successfully.");
+          static id dynamic_config_stub(id self, SEL _cmd, id arg1, id arg2, BOOL arg3, id *arg4) {
+              NSLog(@"[+] WDA Launch Stub (Dynamic): configurationFromCommandLineArguments invoked successfully.");
               return nil;
           }
-          @end
 
           __attribute__((constructor)) static void force_link_compatibility_stub(void) {
-              [XCTCommandLineToolHelper class];
+              Class targetClass = objc_getClass("XCTCommandLineToolHelper");
+              if (targetClass == Nil) {
+                  NSLog(@"[*] WDA Launch Stub: XCTCommandLineToolHelper not found. Registering dynamically...");
+                  Class superClass = objc_getClass("NSObject");
+                  targetClass = objc_allocateClassPair(superClass, "XCTCommandLineToolHelper", 0);
+                  if (targetClass != Nil) {
+                      Class metaClass = object_getClass(targetClass);
+                      SEL selector = sel_registerName("configurationFromCommandLineArguments:userDefaults:requiresTestBundleURL:outError:");
+                      class_addMethod(metaClass, selector, (IMP)dynamic_config_stub, "@@:@@B^@");
+                      objc_registerClassPair(targetClass);
+                      NSLog(@"[+] WDA Launch Stub: XCTCommandLineToolHelper successfully registered dynamically.");
+                  } else {
+                      NSLog(@"[-] WDA Launch Stub: Failed to allocate class pair for XCTCommandLineToolHelper.");
+                  }
+              } else {
+                  NSLog(@"[+] WDA Launch Stub: XCTCommandLineToolHelper already exists in runtime.");
+              }
           }
           // =========================================================================
           EOF
-          )
-
-          if [ -n "$TARGET_M_FILE" ]; then
-              echo "[+] Injecting stub into test runner: $TARGET_M_FILE"
-              echo "$STUB_CODE" >> "$TARGET_M_FILE"
-          fi
-
-          if [ -n "$LIB_M_FILE" ]; then
-              echo "[+] Injecting stub into library: $LIB_M_FILE"
-              echo "$STUB_CODE" >> "$LIB_M_FILE"
-          fi
+          echo "[+] Implementation injection completed successfully."
 
       - name: Build WDA
         script: |
