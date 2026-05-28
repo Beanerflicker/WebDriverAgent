@@ -22,48 +22,40 @@ workflows:
               exit 1
           fi
           
-          echo "[+] Prepending dynamic Obj-C runtime stub into: $TARGET_M_FILE"
-          
-          # Create prepend file with ARC-agnostic dynamic implementation
-          cat << 'EOF' > /tmp/stub.m
+          # Idempotency Check to prevent duplicate compilation symbols if script runs multiple times
+          if grep -q "WebDriverAgent iOS 17+ Launch Compatibility" "$TARGET_M_FILE"; then
+              echo "[*] Compatibility stub is already present in $TARGET_M_FILE. Skipping injection."
+          else
+              echo "[+] Prepending clean Obj-C interface and implementation stub into: $TARGET_M_FILE"
+              
+              cat << 'EOF' > /tmp/stub.m
 
-          // =========================================================================
-          // WebDriverAgent iOS 17+ Launch Compatibility Dynamic Prepended Injection
-          // =========================================================================
-          #import <objc/runtime.h>
-          #import <objc/message.h>
-          #import <Foundation/Foundation.h>
+// =========================================================================
+// WebDriverAgent iOS 17+ Launch Compatibility Dynamic Prepended Injection
+// =========================================================================
+#import <Foundation/Foundation.h>
 
-          static id dynamic_config_stub(id self, SEL _cmd, id arg1, id arg2, BOOL arg3, void *arg4) {
-              NSLog(@"[+] WDA Launch Stub (Dynamic): configurationFromCommandLineArguments invoked successfully.");
-              return nil;
-          }
+@interface XCTCommandLineToolHelper : NSObject
++ (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id *)arg4;
+@end
 
-          __attribute__((constructor)) static void force_link_compatibility_stub(void) {
-              Class targetClass = objc_getClass("XCTCommandLineToolHelper");
-              if (targetClass == Nil) {
-                  Class superClass = objc_getClass("NSObject");
-                  if (superClass != Nil) {
-                      targetClass = objc_allocateClassPair(superClass, "XCTCommandLineToolHelper", 0);
-                      if (targetClass != Nil) {
-                          Class metaClass = object_getClass(targetClass);
-                          if (metaClass != Nil) {
-                              SEL selector = sel_registerName("configurationFromCommandLineArguments:userDefaults:requiresTestBundleURL:outError:");
-                              class_addMethod(metaClass, selector, (IMP)dynamic_config_stub, "@@:@@B^@");
-                          }
-                          objc_registerClassPair(targetClass);
-                      }
-                  }
-              }
-          }
-          // =========================================================================
+@implementation XCTCommandLineToolHelper
++ (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id *)arg4 {
+    return nil;
+}
+@end
 
-          EOF
-          
-          # Append original source code to the temp file, then overwrite original source
-          cat "$TARGET_M_FILE" >> /tmp/stub.m
-          mv /tmp/stub.m "$TARGET_M_FILE"
-          echo "[+] Dynamic prepend completed successfully."
+__attribute__((constructor)) static void force_link_compatibility_stub(void) {
+    [XCTCommandLineToolHelper class];
+}
+// =========================================================================
+
+EOF
+              # Concatenate original file behind our clean stub
+              cat "$TARGET_M_FILE" >> /tmp/stub.m
+              mv /tmp/stub.m "$TARGET_M_FILE"
+              echo "[+] Prepend injection completed successfully."
+          fi
 
       - name: Build WDA
         script: |
