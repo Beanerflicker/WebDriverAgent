@@ -11,15 +11,14 @@ workflows:
       - name: Build WDA
         script: |
           set -e
-          # Compile WDA targeting iOS 17.4 to eliminate legacy XCTest compatibility shims
+          # Compile WDA natively using Xcode's stable default configurations
           xcodebuild build-for-testing \
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner \
             -destination "generic/platform=iOS" \
             -derivedDataPath ./build \
             COMPILER_INDEX_STORE_ENABLE=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            IPHONEOS_DEPLOYMENT_TARGET=17.4
+            CODE_SIGNING_ALLOWED=NO
 
       - name: Bundle and patch libraries
         script: |
@@ -43,116 +42,49 @@ workflows:
           mkdir -p "$APP/Frameworks"
           cp "$XCODE_DEV/Platforms/iPhoneOS.platform/Developer/usr/lib/lib_TestingInterop.dylib" "$APP/Frameworks/"
           
-          # Inline Python script (retained as a safety fallback)
-          cat << 'EOF' > /tmp/patch_weak.py
-          import struct, sys, os
-          
-          def patch_macho_bytes(d, offset, size, fp):
-              slice_d = d[offset:offset+size]
-              if len(slice_d) < 4: return False
+          # 4. Shell-Loop Symbol Swapper
+          # Traverses the entire app bundle and renames all references of XCTCommandLineToolHelper to XCTestCase
+          echo "[*] Initializing deep-bundle symbol renamer..."
+          find "$APP" -type f | while read -r file; do
+              # Skip non-binary assets to optimize build time
+              if [[ "$file" =~ \.(png|plist|car|provision|xml|strings|nib|db|dSYM|yml)$ ]]; then
+                  continue
+              fi
               
-              magic = struct.unpack("<I", slice_d[:4])[0]
-              if magic != 0xFEEDFACF:
-                  return False
-                  
-              ncmds = struct.unpack("<I", slice_d[16:20])[0]
-              cursor = 32
-              patched = False
-              
-              # Patch Lazy Binding for _Testing_Foundation
-              for _ in range(ncmds):
-                  if cursor + 8 > len(slice_d): break
-                  cmd, sz = struct.unpack("<II", slice_d[cursor:cursor+8])
-                  if cmd == 0x0c:
-                      off = struct.unpack("<I", d[cursor+8:cursor+12])[0]
-                      name = slice_d[cursor+off:cursor+sz].split(b"\00")[0]
-                      if b"_Testing_Foundation" in name:
-                          struct.pack_into("<I", slice_d, cursor, 0x80000018)
-                          patched = True
-                  cursor += sz
-              if patched:
-                  print(f"[+] Patched lazy binding inside slice at offset {offset} for {fp}")
-
-              # Patch Symbol Table
-              cursor = 32
-              symoff, nsyms, stroff, strsize = 0, 0, 0, 0
-              for _ in range(ncmds):
-                  if cursor + 8 > len(slice_d): break
-                  cmd, sz = struct.unpack("<II", slice_d[cursor:cursor+8])
-                  if cmd == 0x02: # LC_SYMTAB
-                      symoff, nsyms, stroff, strsize = struct.unpack("<IIII", slice_d[cursor+8:cursor+24])
-                      break
-                  cursor += sz
-                  
-              if nsyms > 0 and symoff > 0:
-                  match_count = 0
-                  for i in range(nsyms):
-                      entry_offset = symoff + (i * 16)
-                      if entry_offset + 16 > len(slice_d): break
-                      n_strx = struct.unpack("<I", slice_d[entry_offset:entry_offset+4])[0]
-                      if n_strx == 0 or n_strx >= strsize: continue
-                      
-                      str_start = stroff + n_strx
-                      str_end = slice_d.find(b"\00", str_start)
-                      if str_end == -1: continue
-                      symbol_name = slice_d[str_start:str_end]
-                      
-                      if b"XCTCommandLineToolHelper" in symbol_name:
-                          n_desc = struct.unpack("<H", slice_d[entry_offset+6:entry_offset+8])[0]
-                          if not (n_desc & 0x0040):
-                              n_desc |= 0x0040 # Set N_WEAK_REF
-                              struct.pack_into("<H", slice_d, entry_offset+6, n_desc)
-                              print(f"[+] Weakened symbol reference: {symbol_name.decode()} inside slice at offset {offset} in {fp}")
-                              match_count += 1
-                              patched = True
-                              
-              if patched:
-                  d[offset:offset+size] = slice_d
-                  return True
-              return False
-
-          def patch_file(fp):
+              python3 -c "
+              import os, sys, struct
+              fp = '$file'
               try:
-                  with open(fp, "rb") as f: d = bytearray(f.read())
+                  with open(fp, 'rb') as f: d = bytearray(f.read())
               except Exception:
-                  return
-              if len(d) < 4: return
+                  sys.exit(0)
               
-              # Parse Big-Endian magic for Universal Fat Headers
-              fat_magic = struct.unpack(">I", d[:4])[0]
-              if fat_magic == 0xCAFEBABE:
-                  nfat_arch = struct.unpack(">I", d[4:8])[0]
-                  modified = False
-                  for i in range(nfat_arch):
-                      arch_offset = 8 + (i * 20)
-                      cputype, cpusubtype, offset, size, align = struct.unpack(">IIIII", d[arch_offset:arch_offset+20])
-                      if patch_macho_bytes(d, offset, size, fp):
-                          modified = True
-                  if modified:
-                      with open(fp, "wb") as f: f.write(d)
-                      print(f"[+] Successfully wrote patched Fat binary back to {fp}")
-              else:
-                  # Parse as standard thin 64-bit Mach-O
-                  magic_thin = struct.unpack("<I", d[:4])[0]
-                  if magic_thin == 0xFEEDFACF:
-                      if patch_macho_bytes(d, 0, len(d), fp):
-                          with open(fp, "wb") as f: f.write(d)
-                          print(f"[+] Successfully wrote patched Thin binary to {fp}")
+              # Target and replacement definitions (exactly padded with nulls to maintain byte alignment)
+              target1 = b'_OBJC_CLASS__\$_XCTCommandLineToolHelper'
+              replace1 = b'_OBJC_CLASS__\$_XCTestCase\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+              
+              target2 = b'_OBJC_METACLASS__\$_XCTCommandLineToolHelper'
+              replace2 = b'_OBJC_METACLASS__\$_XCTestCase\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+              
+              target3 = b'__OBJC_CLASS__\$_XCTCommandLineToolHelper'
+              replace3 = b'__OBJC_CLASS__\$_XCTestCase\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+              
+              target4 = b'__OBJC_METACLASS__\$_XCTCommandLineToolHelper'
+              replace4 = b'__OBJC_METACLASS__\$_XCTestCase\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+              
+              modified = False
+              if target1 in d: d = d.replace(target1, replace1); modified = True
+              if target2 in d: d = d.replace(target2, replace2); modified = True
+              if target3 in d: d = d.replace(target3, replace3); modified = True
+              if target4 in d: d = d.replace(target4, replace4); modified = True
+              
+              if modified:
+                  with open(fp, 'wb') as f: f.write(d)
+                  print(f'[+] Successfully renamed legacy symbols to XCTestCase inside: {os.path.basename(fp)}')
+              "
+          done
 
-          app_path = sys.argv[1]
-          # Walk the entire .app directory recursively and evaluate all files
-          for root, dirs, files in os.walk(app_path):
-              for file in files:
-                  fp = os.path.join(root, file)
-                  if file.endswith(('.png', '.plist', '.car', '.provision', '.xml', '.strings', '.nib', '.db')):
-                      continue
-                  patch_file(fp)
-          EOF
-          
-          # Run the automated deep-bundle binary patcher
-          python3 /tmp/patch_weak.py "$APP"
-
-          # 4. Resolve Signing Identity and Provisioning Assets
+          # 5. Resolve Signing Identity and Provisioning Assets
           EXP_KEY=$(security find-identity -v -p codesigning | grep "Development" | head -n 1 | awk -F'"' '{print $2}')
           echo "[+] Resolved Certificate: $EXP_KEY"
 
@@ -163,10 +95,10 @@ workflows:
           # Extract entitlement schema from profile payload
           python3 -c "import plistlib; data=open('$APP/embedded.mobileprovision','rb').read(); start=data.find(b'<?xml'); end=data.find(b'</plist>')+8; plist=plistlib.loads(data[start:end]); plistlib.dump(plist['Entitlements'], open('/tmp/entitlements.plist','wb'))"
 
-          # 5. Strict Leaf-To-Root Code Signing (Inside-Out Pattern)
+          # 6. Strict Leaf-To-Root Code Signing (Inside-Out Pattern)
           
           # Step A: Sign deep nested libraries inside xctest bundles first (WITHOUT entitlements)
-          XCT_FRAMEWORKS="$APP/PlugIns/WebDriverAgentRunner.xctest/Framework"
+          XCT_FRAMEWORKS="$APP/PlugIns/WebDriverAgentRunner.xctest/Frameworks"
           if [ -d "$XCT_FRAMEWORKS" ]; then
               echo "[*] Signing nested framework dependencies in XCTest folder..."
               find "$XCT_FRAMEWORKS" -type f \( -name "*.dylib" -o -name "WebDriverAgentLib" \) | while read -r lib; do
