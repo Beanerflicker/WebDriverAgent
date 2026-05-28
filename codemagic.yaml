@@ -8,67 +8,17 @@ workflows:
         distribution_type: development
         bundle_identifier: com.beanerflicker.WebDriverAgentRunner.xctrunner
     scripts:
-      - name: Strip Linker Restrictions in SDK
-        script: |
-          set -e
-          echo "[*] Locating Xcode Developer SDK path..."
-          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
-          DEV_FRAMEWORKS_PATH="$SDK_PATH/../../../Developer/Library/Frameworks"
-          echo "[+] SDK Frameworks Path: $DEV_FRAMEWORKS_PATH"
-          
-          # Inline Python script to recursively strip "allowable-clients" whitelists from the SDK .tbd stubs
-          cat << 'EOF' > /tmp/strip_whitelist.py
-          import os, sys
-          
-          def strip_allowable_clients(fp):
-              with open(fp, 'r') as f:
-                  lines = f.readlines()
-              
-              out_lines = []
-              in_skip = False
-              for line in lines:
-                  if "allowable-clients" in line:
-                      if "[" in line and "]" in line:
-                          continue # Skip single-line definitions
-                      else:
-                          in_skip = True # Start skipping multi-line blocks
-                          continue
-                  if in_skip:
-                      if line.strip() == "" or line.startswith("exports:") or line.startswith("---") or line.startswith("..."):
-                          in_skip = False
-                      elif not line.startswith(" ") and not line.startswith("-"):
-                          in_skip = False
-                      else:
-                          continue # Skip elements inside the allowable-clients array
-                  out_lines.append(line)
-                  
-              with open(fp, 'w') as f:
-                  f.write("".join(out_lines))
-              print(f"[+] Stripped whitelists from SDK stub: {os.path.basename(fp)}")
-
-          # Scan Developer stubs directory
-          for root, dirs, files in os.walk(sys.argv[1]):
-              for file in files:
-                  if file.endswith(".tbd"):
-                      strip_allowable_clients(os.path.join(root, file))
-          EOF
-          
-          # Execute the patcher using sudo to write back to the system SDK folder
-          sudo python3 /tmp/strip_whitelist.py "$DEV_FRAMEWORKS_PATH"
-          echo "[+] Linker restriction strip completed successfully."
-
       - name: Build WDA
         script: |
           set -e
-          # Compile WDA using global weak-linking, now authorized by the modified SDK
+          # Compile natively using Xcode's stable default configurations (No OTHER_LDFLAGS overrides)
           xcodebuild build-for-testing \
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner \
             -destination "generic/platform=iOS" \
             -derivedDataPath ./build \
             COMPILER_INDEX_STORE_ENABLE=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            OTHER_LDFLAGS="-weak_framework XCTest -weak_framework XCTestCore -weak_framework XCTestSupport -weak_framework XCTAutomationSupport -weak_framework XCUIAutomation -weak_framework XCUnit"
+            CODE_SIGNING_ALLOWED=NO
 
       - name: Bundle and patch libraries
         script: |
@@ -92,103 +42,47 @@ workflows:
           mkdir -p "$APP/Frameworks"
           cp "$XCODE_DEV/Platforms/iPhoneOS.platform/Developer/usr/lib/lib_TestingInterop.dylib" "$APP/Frameworks/"
           
-          # Inline Fat-Binary Aware Python patch script
-          # Recursively scans the compiled .app bundle and patches ALL Mach-O executables
+          # Inline Python script to recursively scan the bundle and rename 
+          # XCTCommandLineToolHelper to XCTestCase inside the string table
           cat << 'EOF' > /tmp/patch_weak.py
-          import struct, sys, os
+          import sys, os
           
-          # Process individual Mach-O thin bytes extracted from the Fat container
-          def patch_macho_bytes(d, offset, size, fp):
-              slice_d = d[offset:offset+size]
-              if len(slice_d) < 4: return False
-              
-              magic = struct.unpack("<I", slice_d[:4])[0]
-              if magic != 0xFEEDFACF:
-                  return False
-                  
-              ncmds = struct.unpack("<I", slice_d[16:20])[0]
-              cursor = 32
-              patched = False
-              
-              # Patch Lazy Binding for _Testing_Foundation
-              for _ in range(ncmds):
-                  if cursor + 8 > len(slice_d): break
-                  cmd, sz = struct.unpack("<II", slice_d[cursor:cursor+8])
-                  if cmd == 0x0c:
-                      off = struct.unpack("<I", d[cursor+8:cursor+12])[0]
-                      name = slice_d[cursor+off:cursor+sz].split(b"\00")[0]
-                      if b"_Testing_Foundation" in name:
-                          struct.pack_into("<I", slice_d, cursor, 0x80000018)
-                          patched = True
-                  cursor += sz
-              if patched:
-                  print(f"[+] Patched lazy binding inside slice at offset {offset} for {fp}")
-
-              # Patch Symbol Table
-              cursor = 32
-              symoff, nsyms, stroff, strsize = 0, 0, 0, 0
-              for _ in range(ncmds):
-                  if cursor + 8 > len(slice_d): break
-                  cmd, sz = struct.unpack("<II", slice_d[cursor:cursor+8])
-                  if cmd == 0x02: # LC_SYMTAB
-                      symoff, nsyms, stroff, strsize = struct.unpack("<IIII", slice_d[cursor+8:cursor+24])
-                      break
-                  cursor += sz
-                  
-              if nsyms > 0 and symoff > 0:
-                  match_count = 0
-                  for i in range(nsyms):
-                      entry_offset = symoff + (i * 16)
-                      if entry_offset + 16 > len(slice_d): break
-                      n_strx = struct.unpack("<I", slice_d[entry_offset:entry_offset+4])[0]
-                      if n_strx == 0 or n_strx >= strsize: continue
-                      
-                      str_start = stroff + n_strx
-                      str_end = slice_d.find(b"\00", str_start)
-                      if str_end == -1: continue
-                      symbol_name = slice_d[str_start:str_end]
-                      
-                      if b"XCTCommandLineToolHelper" in symbol_name:
-                          n_desc = struct.unpack("<H", slice_d[entry_offset+6:entry_offset+8])[0]
-                          if not (n_desc & 0x0040):
-                              n_desc |= 0x0040 # Set N_WEAK_REF
-                              struct.pack_into("<H", slice_d, entry_offset+6, n_desc)
-                              print(f"[+] Weakened symbol reference: {symbol_name.decode()} inside slice at offset {offset} in {fp}")
-                              match_count += 1
-                              patched = True
-                              
-              if patched:
-                  d[offset:offset+size] = slice_d
-                  return True
-              return False
-
           def patch_file(fp):
               try:
                   with open(fp, "rb") as f: d = bytearray(f.read())
               except Exception:
                   return
-              if len(d) < 4: return
               
-              # Parse Big-Endian magic for Universal Fat Headers
-              fat_magic = struct.unpack(">I", d[:4])[0]
-              if fat_magic == 0xCAFEBABE:
-                  nfat_arch = struct.unpack(">I", d[4:8])[0]
-                  modified = False
-                  for i in range(nfat_arch):
-                      arch_offset = 8 + (i * 20)
-                      cputype, cpusubtype, offset, size, align = struct.unpack(">IIIII", d[arch_offset:arch_offset+20])
-                      if patch_macho_bytes(d, offset, size, fp):
-                          modified = True
-                  if modified:
-                      with open(fp, "wb") as f: f.write(d)
-                      print(f"[+] Successfully wrote patched Fat binary back to {fp}")
-              else:
-                  # Parse as standard thin 64-bit Mach-O
-                  magic_thin = struct.unpack("<I", d[:4])[0]
-                  if magic_thin == 0xFEEDFACF:
-                      if patch_macho_bytes(d, 0, len(d), fp):
-                          with open(fp, "wb") as f: f.write(d)
-                          print(f"[+] Successfully wrote patched Thin binary to {fp}")
+              # Target and replacement definitions (exactly padded with nulls to maintain byte alignment)
+              target1 = b"_OBJC_CLASS_$_XCTCommandLineToolHelper"
+              replace1 = b"_OBJC_CLASS_$_XCTestCase\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+              
+              target2 = b"_OBJC_METACLASS_$_XCTCommandLineToolHelper"
+              replace2 = b"_OBJC_METACLASS_$_XCTestCase\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+              
+              target3 = b"__OBJC_CLASS_$_XCTCommandLineToolHelper"
+              replace3 = b"__OBJC_CLASS_$_XCTestCase\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+              
+              target4 = b"__OBJC_METACLASS_$_XCTCommandLineToolHelper"
+              replace4 = b"__OBJC_METACLASS_$_XCTestCase\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+              
+              modified = False
+              if target1 in d:
+                  d = d.replace(target1, replace1)
+                  modified = True
+              if target2 in d:
+                  d = d.replace(target2, replace2)
+                  modified = True
+              if target3 in d:
+                  d = d.replace(target3, replace3)
+                  modified = True
+              if target4 in d:
+                  d = d.replace(target4, replace4)
+                  modified = True
+                  
+              if modified:
+                  with open(fp, "wb") as f: f.write(d)
+                  print(f"[+] Successfully renamed legacy symbols to XCTestCase inside: {os.path.basename(fp)}")
 
           app_path = sys.argv[1]
           # Walk the entire .app directory recursively and evaluate all files
