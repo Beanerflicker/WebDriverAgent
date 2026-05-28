@@ -8,58 +8,67 @@ workflows:
         distribution_type: development
         bundle_identifier: com.beanerflicker.WebDriverAgentRunner.xctrunner
     scripts:
-      - name: Patch Project and Linker Flags
+      - name: Strip Linker Restrictions in SDK
         script: |
           set -e
-          echo "[*] Injecting target-specific weak-linking into WebDriverAgentRunner..."
+          echo "[*] Locating Xcode Developer SDK path..."
+          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
+          DEV_FRAMEWORKS_PATH="$SDK_PATH/../../../Developer/Library/Frameworks"
+          echo "[+] SDK Frameworks Path: $DEV_FRAMEWORKS_PATH"
           
-          # Indent-independent Python patcher that preserves NextSTEP plist integrity
-          cat << 'EOF' > /tmp/patch_project.py
-          import os
-          fp = "WebDriverAgent.xcodeproj/project.pbxproj"
-          if os.path.exists(fp):
-              with open(fp, "r") as f:
-                  content = f.read()
+          # Inline Python script to recursively strip "allowable-clients" whitelists from the SDK .tbd stubs
+          cat << 'EOF' > /tmp/strip_whitelist.py
+          import os, sys
+          
+          def strip_allowable_clients(fp):
+              with open(fp, 'r') as f:
+                  lines = f.readlines()
               
-              # Standard target settings match patterns (both unquoted and quoted)
-              target_unquoted = "PRODUCT_NAME = WebDriverAgentRunner;"
-              replace_unquoted = 'PRODUCT_NAME = WebDriverAgentRunner;\n\t\t\t\tOTHER_LDFLAGS = "-weak_framework XCTestCore -weak_framework XCTestSupport";'
-              
-              target_quoted = 'PRODUCT_NAME = "WebDriverAgentRunner";'
-              replace_quoted = 'PRODUCT_NAME = "WebDriverAgentRunner";\n\t\t\t\tOTHER_LDFLAGS = "-weak_framework XCTestCore -weak_framework XCTestSupport";'
-              
-              patched = False
-              if target_unquoted in content:
-                  content = content.replace(target_unquoted, replace_unquoted)
-                  patched = True
-              if target_quoted in content:
-                  content = content.replace(target_quoted, replace_quoted)
-                  patched = True
+              out_lines = []
+              in_skip = False
+              for line in lines:
+                  if "allowable-clients" in line:
+                      if "[" in line and "]" in line:
+                          continue # Skip single-line definitions
+                      else:
+                          in_skip = True # Start skipping multi-line blocks
+                          continue
+                  if in_skip:
+                      if line.strip() == "" or line.startswith("exports:") or line.startswith("---") or line.startswith("..."):
+                          in_skip = False
+                      elif not line.startswith(" ") and not line.startswith("-"):
+                          in_skip = False
+                      else:
+                          continue # Skip elements inside the allowable-clients array
+                  out_lines.append(line)
                   
-              if patched:
-                  with open(fp, "w") as f:
-                      f.write(content)
-                  print("[+] Xcode project patched successfully with target-specific linker settings.")
-              else:
-                  print("[-] Error: Target PRODUCT_NAME not found inside project.pbxproj")
-                  exit(1)
-          else:
-              print("[-] Error: project.pbxproj path does not exist")
-              exit(1)
+              with open(fp, 'w') as f:
+                  f.write("".join(out_lines))
+              print(f"[+] Stripped whitelists from SDK stub: {os.path.basename(fp)}")
+
+          # Scan Developer stubs directory
+          for root, dirs, files in os.walk(sys.argv[1]):
+              for file in files:
+                  if file.endswith(".tbd"):
+                      strip_allowable_clients(os.path.join(root, file))
           EOF
-          python3 /tmp/patch_project.py
+          
+          # Execute the patcher using sudo to write back to the system SDK folder
+          sudo python3 /tmp/strip_whitelist.py "$DEV_FRAMEWORKS_PATH"
+          echo "[+] Linker restriction strip completed successfully."
 
       - name: Build WDA
         script: |
           set -e
-          # Compile the test runner natively using the project's perfect internal linking
+          # Compile WDA using global weak-linking, now authorized by the modified SDK
           xcodebuild build-for-testing \
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner \
             -destination "generic/platform=iOS" \
             -derivedDataPath ./build \
             COMPILER_INDEX_STORE_ENABLE=NO \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO \
+            OTHER_LDFLAGS="-weak_framework XCTest -weak_framework XCTestCore -weak_framework XCTestSupport -weak_framework XCTAutomationSupport -weak_framework XCUIAutomation -weak_framework XCUnit"
 
       - name: Bundle and patch libraries
         script: |
