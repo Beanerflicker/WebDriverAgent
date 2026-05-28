@@ -45,43 +45,48 @@ workflows:
           # 4. Shell-Loop Symbol Swapper
           # Traverses the entire app bundle and renames all references of XCTCommandLineToolHelper to XCTestCase
           echo "[*] Initializing deep-bundle symbol renamer..."
+          
+          # Write the patch script safely to a temp file first to prevent indentation errors
+          cat << 'EOF' > /tmp/patch_rename.py
+          import os, sys
+          
+          fp = sys.argv[1]
+          try:
+              with open(fp, 'rb') as f: d = bytearray(f.read())
+          except Exception:
+              sys.exit(0)
+          
+          # Target and replacement definitions (exactly padded with nulls to maintain byte alignment)
+          target1 = b'_OBJC_CLASS_$_XCTCommandLineToolHelper'
+          replace1 = b'_OBJC_CLASS_$_XCTestCase\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+          
+          target2 = b'_OBJC_METACLASS_$_XCTCommandLineToolHelper'
+          replace2 = b'_OBJC_METACLASS_$_XCTestCase\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+          
+          target3 = b'__OBJC_CLASS_$_XCTCommandLineToolHelper'
+          replace3 = b'__OBJC_CLASS_$_XCTestCase\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+          
+          target4 = b'__OBJC_METACLASS_$_XCTCommandLineToolHelper'
+          replace4 = b'__OBJC_METACLASS_$_XCTestCase\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+          
+          modified = False
+          if target1 in d: d = d.replace(target1, replace1); modified = True
+          if target2 in d: d = d.replace(target2, replace2); modified = True
+          if target3 in d: d = d.replace(target3, replace3); modified = True
+          if target4 in d: d = d.replace(target4, replace4); modified = True
+          
+          if modified:
+              with open(fp, 'wb') as f: f.write(d)
+              print(f'[+] Successfully renamed legacy symbols to XCTestCase inside: {os.path.basename(fp)}')
+          EOF
+
+          # Run the loop using the un-indented temp script file
           find "$APP" -type f | while read -r file; do
               # Skip non-binary assets to optimize build time
               if [[ "$file" =~ \.(png|plist|car|provision|xml|strings|nib|db|dSYM|yml)$ ]]; then
                   continue
               fi
-              
-              python3 -c "
-              import os, sys, struct
-              fp = '$file'
-              try:
-                  with open(fp, 'rb') as f: d = bytearray(f.read())
-              except Exception:
-                  sys.exit(0)
-              
-              # Target and replacement definitions (exactly padded with nulls to maintain byte alignment)
-              target1 = b'_OBJC_CLASS__\$_XCTCommandLineToolHelper'
-              replace1 = b'_OBJC_CLASS__\$_XCTestCase\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
-              
-              target2 = b'_OBJC_METACLASS__\$_XCTCommandLineToolHelper'
-              replace2 = b'_OBJC_METACLASS__\$_XCTestCase\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
-              
-              target3 = b'__OBJC_CLASS__\$_XCTCommandLineToolHelper'
-              replace3 = b'__OBJC_CLASS__\$_XCTestCase\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
-              
-              target4 = b'__OBJC_METACLASS__\$_XCTCommandLineToolHelper'
-              replace4 = b'__OBJC_METACLASS__\$_XCTestCase\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
-              
-              modified = False
-              if target1 in d: d = d.replace(target1, replace1); modified = True
-              if target2 in d: d = d.replace(target2, replace2); modified = True
-              if target3 in d: d = d.replace(target3, replace3); modified = True
-              if target4 in d: d = d.replace(target4, replace4); modified = True
-              
-              if modified:
-                  with open(fp, 'wb') as f: f.write(d)
-                  print(f'[+] Successfully renamed legacy symbols to XCTestCase inside: {os.path.basename(fp)}')
-              "
+              python3 /tmp/patch_rename.py "$file"
           done
 
           # 5. Resolve Signing Identity and Provisioning Assets
