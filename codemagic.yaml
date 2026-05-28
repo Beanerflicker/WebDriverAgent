@@ -13,43 +13,39 @@ workflows:
           set -e
           echo "[*] Injecting target-specific weak-linking into WebDriverAgentRunner..."
           
-          # This Python script parses the raw project configurations and appends the 
-          # weak-linkage flags strictly to the target build settings of the test runner
+          # Indent-independent Python patcher that preserves NextSTEP plist integrity
           cat << 'EOF' > /tmp/patch_project.py
           import os
           fp = "WebDriverAgent.xcodeproj/project.pbxproj"
           if os.path.exists(fp):
               with open(fp, "r") as f:
                   content = f.read()
-              parts = content.split("/* Begin XCBuildConfiguration section */")
-              if len(parts) > 1:
-                  config_section, rest = parts[1].split("/* End XCBuildConfiguration section */")
-                  blocks = config_section.split("\n\t\t};")
-                  new_blocks = []
-                  for block in blocks:
-                      # Identify the unique target build configurations for WebDriverAgentRunner
-                      if "WebDriverAgentRunner" in block and "buildSettings" in block:
-                          if "OTHER_LDFLAGS" in block:
-                              lines = block.split("\n")
-                              new_lines = []
-                              for line in lines:
-                                  if "OTHER_LDFLAGS" in line:
-                                      line = line.replace('"', '')
-                                      line = line.replace(';', '')
-                                      line = line.replace('OTHER_LDFLAGS = ', 'OTHER_LDFLAGS = "-weak_framework XCTestCore -weak_framework XCTestSupport ')
-                                      line = line + '";'
-                                  new_lines.append(line)
-                              block = "\n".join(new_lines)
-                          else:
-                              # If no custom flags exist, inject the settings block fresh
-                              block = block.replace("buildSettings = {", 'buildSettings = {\n\t\t\t\tOTHER_LDFLAGS = "-weak_framework XCTestCore -weak_framework XCTestSupport";')
-                          print("[+] Injected target-specific weak-linking into WebDriverAgentRunner config")
-                      new_blocks.append(block)
-                  reconstructed_config = "\n\t\t};".join(new_blocks)
-                  content = parts[0] + "/* Begin XCBuildConfiguration section */" + reconstructed_config + "/* End XCBuildConfiguration section */" + rest
+              
+              # Standard target settings match patterns (both unquoted and quoted)
+              target_unquoted = "PRODUCT_NAME = WebDriverAgentRunner;"
+              replace_unquoted = 'PRODUCT_NAME = WebDriverAgentRunner;\n\t\t\t\tOTHER_LDFLAGS = "-weak_framework XCTestCore -weak_framework XCTestSupport";'
+              
+              target_quoted = 'PRODUCT_NAME = "WebDriverAgentRunner";'
+              replace_quoted = 'PRODUCT_NAME = "WebDriverAgentRunner";\n\t\t\t\tOTHER_LDFLAGS = "-weak_framework XCTestCore -weak_framework XCTestSupport";'
+              
+              patched = False
+              if target_unquoted in content:
+                  content = content.replace(target_unquoted, replace_unquoted)
+                  patched = True
+              if target_quoted in content:
+                  content = content.replace(target_quoted, replace_quoted)
+                  patched = True
+                  
+              if patched:
                   with open(fp, "w") as f:
                       f.write(content)
-                  print("[+] Xcode project patched successfully.")
+                  print("[+] Xcode project patched successfully with target-specific linker settings.")
+              else:
+                  print("[-] Error: Target PRODUCT_NAME not found inside project.pbxproj")
+                  exit(1)
+          else:
+              print("[-] Error: project.pbxproj path does not exist")
+              exit(1)
           EOF
           python3 /tmp/patch_project.py
 
