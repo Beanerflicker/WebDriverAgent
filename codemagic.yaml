@@ -28,33 +28,35 @@ workflows:
           else
               echo "[+] Prepending clean Obj-C interface and implementation stub into: $TARGET_M_FILE"
               
-              cat << 'EOF' > /tmp/stub.m
+              # Fully indenting the heredoc lines and the delimiter to satisfy the YAML parser
+              cat << '              EOF' > /tmp/stub.m
 
-// =========================================================================
-// WebDriverAgent iOS 17+ Launch Compatibility Dynamic Prepended Injection
-// =========================================================================
-#import <Foundation/Foundation.h>
+              // =========================================================================
+              // WebDriverAgent iOS 17+ Launch Compatibility Dynamic Prepended Injection
+              // =========================================================================
+              #import <Foundation/Foundation.h>
 
-@interface XCTCommandLineToolHelper : NSObject
-+ (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id *)arg4;
-@end
+              @interface XCTCommandLineToolHelper : NSObject
+              + (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id *)arg4;
+              @end
 
-@implementation XCTCommandLineToolHelper
-+ (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id *)arg4 {
-    return nil;
-}
-@end
+              @implementation XCTCommandLineToolHelper
+              + (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id *)arg4 {
+                  return nil;
+              }
+              @end
 
-__attribute__((constructor)) static void force_link_compatibility_stub(void) {
-    [XCTCommandLineToolHelper class];
-}
-// =========================================================================
+              __attribute__((constructor)) static void force_link_compatibility_stub(void) {
+                  [XCTCommandLineToolHelper class];
+              }
+              // =========================================================================
 
-EOF
+              EOF
+              
               # Concatenate original file behind our clean stub
               cat "$TARGET_M_FILE" >> /tmp/stub.m
               mv /tmp/stub.m "$TARGET_M_FILE"
-              echo "[+] Prepend injection completed successfully."
+              echo "[+] Dynamic prepend completed successfully."
           fi
 
       - name: Build WDA
