@@ -84,6 +84,63 @@ workflows:
           cp "$XCODE_DEV/Platforms/iPhoneOS.platform/Developer/usr/lib/lib_TestingInterop.dylib" "$APP/Frameworks/"
           cp -R "$XCODE_DEV/Platforms/iPhoneOS.platform/Developer/Library/Frameworks/_Testing_Foundation.framework" "$APP/Frameworks/"
           cp -R "$XCODE_DEV/Platforms/iPhoneOS.platform/Developer/Library/Frameworks/XCTest.framework" "$APP/Frameworks/"
+          
+          # Patch binaries using Python to make XCTest and _Testing_Foundation weak links
+          cat << 'EOF' > /tmp/patch_weak.py
+          import struct, sys, os
+          def patch_macho_bytes(d, offset, size, fp):
+              slice_d = d[offset:offset+size]
+              if len(slice_d) < 4: return False
+              magic = struct.unpack("<I", slice_d[:4])[0]
+              if magic != 0xFEEDFACF: return False
+              ncmds = struct.unpack("<I", slice_d[16:20])[0]
+              cursor = 32
+              patched = False
+              for _ in range(ncmds):
+                  if cursor + 8 > len(slice_d): break
+                  cmd, sz = struct.unpack("<II", slice_d[cursor:cursor+8])
+                  if cmd == 0x0c: # LC_LOAD_DYLIB
+                      off = struct.unpack("<I", slice_d[cursor+8:cursor+12])[0]
+                      name = slice_d[cursor+off:cursor+sz].split(b"\00")[0]
+                      if b"_Testing_Foundation" in name or b"XCTest" in name:
+                          struct.pack_into("<I", slice_d, cursor, 0x80000018) # LC_LOAD_WEAK_DYLIB
+                          patched = True
+                  cursor += sz
+              if patched:
+                  print(f"[+] Patched lazy binding inside slice at offset {offset} for {fp}")
+                  d[offset:offset+size] = slice_d
+                  return True
+              return False
+
+          def patch_file(fp):
+              try:
+                  with open(fp, "rb") as f: d = bytearray(f.read())
+              except Exception: return
+              if len(d) < 4: return
+              fat_magic = struct.unpack(">I", d[:4])[0]
+              if fat_magic == 0xCAFEBABE:
+                  nfat_arch = struct.unpack(">I", d[4:8])[0]
+                  modified = False
+                  for i in range(nfat_arch):
+                      arch_offset = 8 + (i * 20)
+                      cputype, cpusubtype, offset, size, align = struct.unpack(">IIIII", d[arch_offset:arch_offset+20])
+                      if patch_macho_bytes(d, offset, size, fp): modified = True
+                  if modified:
+                      with open(fp, "wb") as f: f.write(d)
+              else:
+                  magic_thin = struct.unpack("<I", d[:4])[0]
+                  if magic_thin == 0xFEEDFACF:
+                      if patch_macho_bytes(d, 0, len(d), fp):
+                          with open(fp, "wb") as f: f.write(d)
+
+          app_path = sys.argv[1]
+          for root, dirs, files in os.walk(app_path):
+              for file in files:
+                  fp = os.path.join(root, file)
+                  if file.endswith(('.png', '.plist', '.car', '.provision', '.xml', '.strings', '.nib', '.db')): continue
+                  patch_file(fp)
+          EOF
+          python3 /tmp/patch_weak.py "$APP"
 
           # Extract entitlements
           EXP_KEY=$(security find-identity -v -p codesigning | grep "Development" | head -n 1 | awk -F'"' '{print $2}')
