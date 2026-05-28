@@ -23,33 +23,27 @@ workflows:
           fi
           
           # Idempotency Check to prevent duplicate compilation symbols if script runs multiple times
-          if grep -q "WebDriverAgent iOS 17+ Launch Compatibility" "$TARGET_M_FILE"; then
+          if grep -q "XCTCommandLineToolHelper" "$TARGET_M_FILE"; then
               echo "[*] Compatibility stub is already present in $TARGET_M_FILE. Skipping injection."
           else
-              echo "[+] Prepending clean Obj-C interface and implementation stub into: $TARGET_M_FILE"
+              echo "[+] Appending clean Obj-C implementation stub into: $TARGET_M_FILE"
               
-              # Write the stub line-by-line to avoid spacing-sensitive heredoc delimiters
-              echo "// WebDriverAgent iOS 17+ Launch Compatibility" > /tmp/stub.m
-              echo "#import <Foundation/Foundation.h>" >> /tmp/stub.m
-              echo "" >> /tmp/stub.m
-              echo "@interface XCTCommandLineToolHelper : NSObject" >> /tmp/stub.m
-              echo "+ (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id *)arg4;" >> /tmp/stub.m
-              echo "@end" >> /tmp/stub.m
-              echo "" >> /tmp/stub.m
-              echo "@implementation XCTCommandLineToolHelper" >> /tmp/stub.m
-              echo "+ (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id *)arg4 {" >> /tmp/stub.m
-              echo "    return nil;" >> /tmp/stub.m
-              echo "}" >> /tmp/stub.m
-              echo "@end" >> /tmp/stub.m
-              echo "" >> /tmp/stub.m
-              echo "__attribute__((constructor)) static void force_link_compatibility_stub(void) {" >> /tmp/stub.m
-              echo "    [XCTCommandLineToolHelper class];" >> /tmp/stub.m
-              echo "}" >> /tmp/stub.m
+              # 1. Write a guaranteed newline to prevent line-merging syntax issues
+              echo "" >> "$TARGET_M_FILE"
               
-              # Concatenate original file behind our clean stub
-              cat "$TARGET_M_FILE" >> /tmp/stub.m
-              mv /tmp/stub.m "$TARGET_M_FILE"
-              echo "[+] Dynamic prepend completed successfully."
+              # 2. Append the exact implementation block that satisfies the XCTest headers
+              echo "@implementation XCTCommandLineToolHelper" >> "$TARGET_M_FILE"
+              echo "+ (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id __autoreleasing *)arg4 {" >> "$TARGET_M_FILE"
+              echo "    NSLog(@\"[+] WDA Launch Stub: configurationFromCommandLineArguments invoked successfully.\");" >> "$TARGET_M_FILE"
+              echo "    return nil;" >> "$TARGET_M_FILE"
+              echo "}" >> "$TARGET_M_FILE"
+              echo "@end" >> "$TARGET_M_FILE"
+              echo "" >> "$TARGET_M_FILE"
+              echo "__attribute__((constructor)) static void force_link_compatibility_stub(void) {" >> "$TARGET_M_FILE"
+              echo "    [XCTCommandLineToolHelper class];" >> "$TARGET_M_FILE"
+              echo "}" >> "$TARGET_M_FILE"
+              
+              echo "[+] Dynamic append completed successfully."
           fi
 
       - name: Build WDA
