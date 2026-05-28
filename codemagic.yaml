@@ -11,25 +11,24 @@ workflows:
       - name: Inject iOS 17+ Launch Compatibility Stub
         script: |
           set -e
-          echo "[*] Locating target test runner compilation source..."
+          echo "[*] Locating target compilation source (non-XCTest environment)..."
           
-          # Cascaded discovery: Search Runner folders first, fallback to root project stubs
-          TARGET_M_FILE=$(find . -path "*Runner*/*" \( -name "*.m" -o -name "*.mm" \) | head -n 1)
+          # Target core utilities that compile inside the workspace but contain zero XCTest imports
+          TARGET_M_FILE=$(find . -name "FBAccessibilityTraits.m" | head -n 1)
           if [ -z "$TARGET_M_FILE" ]; then
-              echo "[!] Warning: No source file found in Runner folder. Performing global fallback search..."
-              TARGET_M_FILE=$(find . \( -name "*.m" -o -name "*.mm" \) ! -path "*/Vendor/*" | head -n 1)
+              echo "[!] Warning: FBAccessibilityTraits.m not found. Falling back to FBAlert.m..."
+              TARGET_M_FILE=$(find . -name "FBAlert.m" | head -n 1)
           fi
           
           if [ -z "$TARGET_M_FILE" ]; then
-              echo "[-] Error: No compiled source targets (.m/.mm) could be located."
+              echo "[-] Error: No compiled source targets (.m) could be located."
               exit 1
           fi
           
           echo "[+] Injecting Obj-C compatibility stub into: $TARGET_M_FILE"
           
-          # Append the minimal class interface and implementation to satisfy early-launch constraints.
-          # Includes a binary constructor (__attribute__((constructor))) to prevent dead_strip optimizations.
-          # Utilizes an ARC-compliant (__autoreleasing) pointer signature to bypass modern compiler checks.
+          # Append the class interface and implementation to satisfy launch constraints.
+          # Compiles cleanly without duplicate definitions because no XCTest headers are present in this module.
           cat << 'EOF' >> "$TARGET_M_FILE"
 
           // =========================================================================
