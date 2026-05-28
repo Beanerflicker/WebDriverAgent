@@ -8,10 +8,41 @@ workflows:
         distribution_type: development
         bundle_identifier: com.beanerflicker.WebDriverAgentRunner.xctrunner
     scripts:
+      - name: Inject iOS 17+ Launch Compatibility Stub
+        script: |
+          set -e
+          # Dynamically locate the main test runner entry file
+          TARGET_M_FILE=$(find . -name "WebDriverAgentRunner.m" | head -n 1)
+          if [ -z "$TARGET_M_FILE" ]; then
+              echo "[-] Error: WebDriverAgentRunner.m could not be located."
+              exit 1
+          fi
+          echo "[+] Injecting Obj-C compatibility stub into: $TARGET_M_FILE"
+          
+          # Append the minimal class interface and implementation to satisfy early-launch constraints
+          cat << 'EOF' >> "$TARGET_M_FILE"
+
+          // =========================================================================
+          // WebDriverAgent iOS 17+ / 26+ Launch Compatibility Stub Injection
+          // =========================================================================
+          @interface XCTCommandLineToolHelper : NSObject
+          + (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id*)arg4;
+          @end
+
+          @implementation XCTCommandLineToolHelper
+          + (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id*)arg4 {
+              NSLog(@"[+] WDA Launch Stub: configurationFromCommandLineArguments invoked successfully.");
+              return nil;
+          }
+          @end
+          // =========================================================================
+          EOF
+          echo "[+] Stub injection completed successfully."
+
       - name: Build WDA
         script: |
           set -e
-          # Compile WDA natively using Xcode's stable default configurations
+          # Compile natively using Xcode's stable default configurations
           xcodebuild build-for-testing \
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner \
@@ -42,54 +73,82 @@ workflows:
           mkdir -p "$APP/Frameworks"
           cp "$XCODE_DEV/Platforms/iPhoneOS.platform/Developer/usr/lib/lib_TestingInterop.dylib" "$APP/Frameworks/"
           
-          # 4. Shell-Loop Symbol Swapper
-          # Traverses the entire app bundle and renames all references of XCTCommandLineToolHelper to XCTestCase
-          echo "[*] Initializing deep-bundle symbol renamer..."
+          # Inline Fat-Binary Aware Python patch script strictly for libXCTestSwiftSupport lazy bindings
+          cat << 'EOF' > /tmp/patch_weak.py
+          import struct, sys, os
           
-          # Write the patch script safely to a temp file first to prevent indentation errors
-          cat << 'EOF' > /tmp/patch_rename.py
-          import os, sys
-          
-          fp = sys.argv[1]
-          try:
-              with open(fp, 'rb') as f: d = bytearray(f.read())
-          except Exception:
-              sys.exit(0)
-          
-          # Target and replacement definitions (exactly padded with nulls to maintain byte alignment)
-          target1 = b'_OBJC_CLASS_$_XCTCommandLineToolHelper'
-          replace1 = b'_OBJC_CLASS_$_XCTestCase\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
-          
-          target2 = b'_OBJC_METACLASS_$_XCTCommandLineToolHelper'
-          replace2 = b'_OBJC_METACLASS_$_XCTestCase\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
-          
-          target3 = b'__OBJC_CLASS_$_XCTCommandLineToolHelper'
-          replace3 = b'__OBJC_CLASS_$_XCTestCase\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
-          
-          target4 = b'__OBJC_METACLASS_$_XCTCommandLineToolHelper'
-          replace4 = b'__OBJC_METACLASS_$_XCTestCase\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
-          
-          modified = False
-          if target1 in d: d = d.replace(target1, replace1); modified = True
-          if target2 in d: d = d.replace(target2, replace2); modified = True
-          if target3 in d: d = d.replace(target3, replace3); modified = True
-          if target4 in d: d = d.replace(target4, replace4); modified = True
-          
-          if modified:
-              with open(fp, 'wb') as f: f.write(d)
-              print(f'[+] Successfully renamed legacy symbols to XCTestCase inside: {os.path.basename(fp)}')
+          def patch_macho_bytes(d, offset, size, fp):
+              slice_d = d[offset:offset+size]
+              if len(slice_d) < 4: return False
+              
+              magic = struct.unpack("<I", slice_d[:4])[0]
+              if magic != 0xFEEDFACF:
+                  return False
+                  
+              ncmds = struct.unpack("<I", slice_d[16:20])[0]
+              cursor = 32
+              patched = False
+              
+              # Patch Lazy Binding for _Testing_Foundation
+              for _ in range(ncmds):
+                  if cursor + 8 > len(slice_d): break
+                  cmd, sz = struct.unpack("<II", slice_d[cursor:cursor+8])
+                  if cmd == 0x0c:
+                      off = struct.unpack("<I", d[cursor+8:cursor+12])[0]
+                      name = slice_d[cursor+off:cursor+sz].split(b"\00")[0]
+                      if b"_Testing_Foundation" in name:
+                          struct.pack_into("<I", slice_d, cursor, 0x80000018)
+                          patched = True
+                  cursor += sz
+              if patched:
+                  print(f"[+] Patched lazy binding inside slice at offset {offset} for {fp}")
+                  d[offset:offset+size] = slice_d
+                  return True
+              return False
+
+          def patch_file(fp):
+              try:
+                  with open(fp, "rb") as f: d = bytearray(f.read())
+              except Exception:
+                  return
+              if len(d) < 4: return
+              
+              # Parse Big-Endian magic for Universal Fat Headers
+              fat_magic = struct.unpack(">I", d[:4])[0]
+              if fat_magic == 0xCAFEBABE:
+                  print(f"[+] Identified Universal Fat Binary: {fp}")
+                  nfat_arch = struct.unpack(">I", d[4:8])[0]
+                  modified = False
+                  for i in range(nfat_arch):
+                      arch_offset = 8 + (i * 20)
+                      cputype, cpusubtype, offset, size, align = struct.unpack(">IIIII", d[arch_offset:arch_offset+20])
+                      if patch_macho_bytes(d, offset, size, fp):
+                          modified = True
+                  if modified:
+                      with open(fp, "wb") as f: f.write(d)
+                      print(f"[+] Successfully wrote patched Fat binary back to {fp}")
+              else:
+                  # Parse as standard thin 64-bit Mach-O
+                  magic_thin = struct.unpack("<I", d[:4])[0]
+                  if magic_thin == 0xFEEDFACF:
+                      if patch_macho_bytes(d, 0, len(d), fp):
+                          with open(fp, "wb") as f: f.write(d)
+                          print(f"[+] Successfully wrote patched Thin binary to {fp}")
+
+          app_path = sys.argv[1]
+          # Walk the entire .app directory recursively and evaluate all files
+          for root, dirs, files in os.walk(app_path):
+              for file in files:
+                  fp = os.path.join(root, file)
+                  if file.endswith(('.png', '.plist', '.car', '.provision', '.xml', '.strings', '.nib', '.db')):
+                      continue
+                  patch_file(fp)
           EOF
+          
+          # Run the automated deep-bundle binary patcher
+          python3 /tmp/patch_weak.py "$APP"
 
-          # Run the loop using the un-indented temp script file
-          find "$APP" -type f | while read -r file; do
-              # Skip non-binary assets to optimize build time
-              if [[ "$file" =~ \.(png|plist|car|provision|xml|strings|nib|db|dSYM|yml)$ ]]; then
-                  continue
-              fi
-              python3 /tmp/patch_rename.py "$file"
-          done
-
-          # 5. Resolve Signing Identity and Provisioning Assets
+          # 4. Resolve Signing Identity and Provisioning Assets
           EXP_KEY=$(security find-identity -v -p codesigning | grep "Development" | head -n 1 | awk -F'"' '{print $2}')
           echo "[+] Resolved Certificate: $EXP_KEY"
 
@@ -100,7 +159,7 @@ workflows:
           # Extract entitlement schema from profile payload
           python3 -c "import plistlib; data=open('$APP/embedded.mobileprovision','rb').read(); start=data.find(b'<?xml'); end=data.find(b'</plist>')+8; plist=plistlib.loads(data[start:end]); plistlib.dump(plist['Entitlements'], open('/tmp/entitlements.plist','wb'))"
 
-          # 6. Strict Leaf-To-Root Code Signing (Inside-Out Pattern)
+          # 5. Strict Leaf-To-Root Code Signing (Inside-Out Pattern)
           
           # Step A: Sign deep nested libraries inside xctest bundles first (WITHOUT entitlements)
           XCT_FRAMEWORKS="$APP/PlugIns/WebDriverAgentRunner.xctest/Frameworks"
