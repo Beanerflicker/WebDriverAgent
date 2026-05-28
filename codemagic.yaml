@@ -11,14 +11,15 @@ workflows:
       - name: Inject iOS 17+ Launch Compatibility Implementation
         script: |
           set -e
-          echo "[*] Locating target test runner compilation source..."
-          TARGET_M_FILE=$(find . -path "*WebDriverAgentRunner*/*" \( -name "UITestingUITests.m" -o -name "UITestingUITests.mm" \) | head -n 1)
+          echo "[*] Locating target core library compilation source..."
+          # Target WebDriverAgentLib instead of WebDriverAgentRunner to avoid XCTest header conflicts
+          TARGET_M_FILE=$(find . -path "*WebDriverAgentLib*/*" -name "WDAConfiguration.m" | head -n 1)
           if [ -z "$TARGET_M_FILE" ]; then
-              echo "[!] Warning: UITestingUITests.m not found. Searching for any runner source..."
-              TARGET_M_FILE=$(find . -path "*WebDriverAgentRunner*/*" -name "*.m" | head -n 1)
+              echo "[!] Warning: WDAConfiguration.m not found. Searching for any library source..."
+              TARGET_M_FILE=$(find . -path "*WebDriverAgentLib*/*" -name "*.m" | head -n 1)
           fi
           if [ -z "$TARGET_M_FILE" ]; then
-              echo "[-] Error: No compiled source targets inside WebDriverAgentRunner folder."
+              echo "[-] Error: No compiled source targets inside WebDriverAgentLib folder."
               exit 1
           fi
           
@@ -31,10 +32,13 @@ workflows:
               # 1. Write a guaranteed newline to prevent line-merging syntax issues
               echo "" >> "$TARGET_M_FILE"
               
-              # 2. Append the exact implementation block that satisfies the XCTest headers
+              # 2. Append the exact implementation block to the pure library source
+              echo "@interface XCTCommandLineToolHelper : NSObject" >> "$TARGET_M_FILE"
+              echo "+ (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id *)arg4;" >> "$TARGET_M_FILE"
+              echo "@end" >> "$TARGET_M_FILE"
+              echo "" >> "$TARGET_M_FILE"
               echo "@implementation XCTCommandLineToolHelper" >> "$TARGET_M_FILE"
-              echo "+ (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id __autoreleasing *)arg4 {" >> "$TARGET_M_FILE"
-              echo "    NSLog(@\"[+] WDA Launch Stub: configurationFromCommandLineArguments invoked successfully.\");" >> "$TARGET_M_FILE"
+              echo "+ (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id *)arg4 {" >> "$TARGET_M_FILE"
               echo "    return nil;" >> "$TARGET_M_FILE"
               echo "}" >> "$TARGET_M_FILE"
               echo "@end" >> "$TARGET_M_FILE"
