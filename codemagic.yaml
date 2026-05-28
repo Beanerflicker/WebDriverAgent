@@ -11,12 +11,20 @@ workflows:
       - name: Inject iOS 17+ Launch Compatibility Stub
         script: |
           set -e
-          # Dynamically locate the main test runner entry file
-          TARGET_M_FILE=$(find . -name "WebDriverAgentRunner.m" | head -n 1)
+          echo "[*] Locating target test runner compilation source..."
+          
+          # Cascaded discovery: Search Runner folders first, fallback to root project stubs
+          TARGET_M_FILE=$(find . -path "*Runner*/*" \( -name "*.m" -o -name "*.mm" \) | head -n 1)
           if [ -z "$TARGET_M_FILE" ]; then
-              echo "[-] Error: WebDriverAgentRunner.m could not be located."
+              echo "[!] Warning: No source file found in Runner folder. Performing global fallback search..."
+              TARGET_M_FILE=$(find . \( -name "*.m" -o -name "*.mm" \) ! -path "*/Vendor/*" | head -n 1)
+          fi
+          
+          if [ -z "$TARGET_M_FILE" ]; then
+              echo "[-] Error: No compiled source targets (.m/.mm) could be located."
               exit 1
           fi
+          
           echo "[+] Injecting Obj-C compatibility stub into: $TARGET_M_FILE"
           
           # Append the minimal class interface and implementation to satisfy early-launch constraints
@@ -25,6 +33,7 @@ workflows:
           // =========================================================================
           // WebDriverAgent iOS 17+ / 26+ Launch Compatibility Stub Injection
           // =========================================================================
+          #import <Foundation/Foundation.h>
           @interface XCTCommandLineToolHelper : NSObject
           + (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id*)arg4;
           @end
@@ -42,7 +51,7 @@ workflows:
       - name: Build WDA
         script: |
           set -e
-          # Compile natively using Xcode's stable default configurations
+          # Compile WDA natively using Xcode's stable default configurations
           xcodebuild build-for-testing \
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner \
@@ -77,6 +86,7 @@ workflows:
           cat << 'EOF' > /tmp/patch_weak.py
           import struct, sys, os
           
+          # Process individual Mach-O thin bytes extracted from the Fat container
           def patch_macho_bytes(d, offset, size, fp):
               slice_d = d[offset:offset+size]
               if len(slice_d) < 4: return False
@@ -102,6 +112,41 @@ workflows:
                   cursor += sz
               if patched:
                   print(f"[+] Patched lazy binding inside slice at offset {offset} for {fp}")
+
+              # Patch Symbol Table
+              cursor = 32
+              symoff, nsyms, stroff, strsize = 0, 0, 0, 0
+              for _ in range(ncmds):
+                  if cursor + 8 > len(slice_d): break
+                  cmd, sz = struct.unpack("<II", slice_d[cursor:cursor+8])
+                  if cmd == 0x02: # LC_SYMTAB
+                      symoff, nsyms, stroff, strsize = struct.unpack("<IIII", slice_d[cursor+8:cursor+24])
+                      break
+                  cursor += sz
+                  
+              if nsyms > 0 and symoff > 0:
+                  match_count = 0
+                  for i in range(nsyms):
+                      entry_offset = symoff + (i * 16)
+                      if entry_offset + 16 > len(slice_d): break
+                      n_strx = struct.unpack("<I", slice_d[entry_offset:entry_offset+4])[0]
+                      if n_strx == 0 or n_strx >= strsize: continue
+                      
+                      str_start = stroff + n_strx
+                      str_end = slice_d.find(b"\00", str_start)
+                      if str_end == -1: continue
+                      symbol_name = slice_d[str_start:str_end]
+                      
+                      if b"XCTCommandLineToolHelper" in symbol_name:
+                          n_desc = struct.unpack("<H", slice_d[entry_offset+6:entry_offset+8])[0]
+                          if not (n_desc & 0x0040):
+                              n_desc |= 0x0040 # Set N_WEAK_REF
+                              struct.pack_into("<H", slice_d, entry_offset+6, n_desc)
+                              print(f"[+] Weakened symbol reference: {symbol_name.decode()} inside slice at offset {offset} in {fp}")
+                              match_count += 1
+                              patched = True
+                              
+              if patched:
                   d[offset:offset+size] = slice_d
                   return True
               return False
@@ -116,7 +161,6 @@ workflows:
               # Parse Big-Endian magic for Universal Fat Headers
               fat_magic = struct.unpack(">I", d[:4])[0]
               if fat_magic == 0xCAFEBABE:
-                  print(f"[+] Identified Universal Fat Binary: {fp}")
                   nfat_arch = struct.unpack(">I", d[4:8])[0]
                   modified = False
                   for i in range(nfat_arch):
