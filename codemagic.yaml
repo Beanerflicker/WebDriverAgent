@@ -8,7 +8,7 @@ workflows:
         distribution_type: development
         bundle_identifier: com.beanerflicker.WebDriverAgentRunner.xctrunner
     scripts:
-      - name: Inject iOS 17+ Launch Compatibility Stub
+      - name: Inject iOS 17+ Launch Compatibility Category
         script: |
           set -e
           echo "[*] Locating target compilation source (non-XCTest environment)..."
@@ -25,35 +25,33 @@ workflows:
               exit 1
           fi
           
-          echo "[+] Injecting Obj-C compatibility stub into: $TARGET_M_FILE"
+          echo "[+] Injecting Obj-C compatibility Category into: $TARGET_M_FILE"
           
-          # Append the class interface and implementation to satisfy launch constraints.
-          # Compiles cleanly without duplicate definitions because no XCTest headers are present in this module.
+          # Append the Category on XCTestCase to the target module.
+          # Swizzles the configuration selector directly onto the standard XCTestCase class.
           cat << 'EOF' >> "$TARGET_M_FILE"
 
           // =========================================================================
-          // WebDriverAgent iOS 17+ / 26+ Launch Compatibility Stub Injection
+          // WebDriverAgent iOS 17+ / 26+ Launch Compatibility Category Injection
           // =========================================================================
           #import <Foundation/Foundation.h>
           
-          @interface XCTCommandLineToolHelper : NSObject
+          @interface XCTestCase : NSObject
+          @end
+
+          @interface XCTestCase (LaunchCompatibilityStub)
           + (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id __autoreleasing *)arg4;
           @end
 
-          @implementation XCTCommandLineToolHelper
+          @implementation XCTestCase (LaunchCompatibilityStub)
           + (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id __autoreleasing *)arg4 {
-              NSLog(@"[+] WDA Launch Stub: configurationFromCommandLineArguments invoked successfully.");
+              NSLog(@"[+] WDA Category Stub: configurationFromCommandLineArguments invoked successfully on XCTestCase.");
               return nil;
           }
           @end
-
-          // Static constructor executes on image load, forcing 'ld' to preserve the class
-          __attribute__((constructor)) static void force_link_compatibility_stub(void) {
-              [XCTCommandLineToolHelper class];
-          }
           // =========================================================================
           EOF
-          echo "[+] Stub injection completed successfully."
+          echo "[+] Category injection completed successfully."
 
       - name: Build WDA
         script: |
@@ -89,7 +87,8 @@ workflows:
           mkdir -p "$APP/Frameworks"
           cp "$XCODE_DEV/Platforms/iPhoneOS.platform/Developer/usr/lib/lib_TestingInterop.dylib" "$APP/Frameworks/"
           
-          # Inline Fat-Binary Aware Python patch script strictly for libXCTestSwiftSupport lazy bindings
+          # Inline Fat-Binary Aware Python patch script
+          # Recursively scans the bundle and renames references of XCTCommandLineToolHelper to XCTestCase
           cat << 'EOF' > /tmp/patch_weak.py
           import struct, sys, os
           
@@ -106,12 +105,12 @@ workflows:
               cursor = 32
               patched = False
               
-              # Patch Lazy Binding for _Testing_Foundation
+              # Part A: Patch Lazy Binding for _Testing_Foundation
               for _ in range(ncmds):
                   if cursor + 8 > len(slice_d): break
                   cmd, sz = struct.unpack("<II", slice_d[cursor:cursor+8])
                   if cmd == 0x0c:
-                      off = struct.unpack("<I", d[cursor+8:cursor+12])[0]
+                      off = struct.unpack("<I", slice_d[cursor+8:cursor+12])[0]
                       name = slice_d[cursor+off:cursor+sz].split(b"\00")[0]
                       if b"_Testing_Foundation" in name:
                           struct.pack_into("<I", slice_d, cursor, 0x80000018)
@@ -119,6 +118,27 @@ workflows:
                   cursor += sz
               if patched:
                   print(f"[+] Patched lazy binding inside slice at offset {offset} for {fp}")
+
+              # Part B: String Table Renaming (Replace XCTCommandLineToolHelper with XCTestCase)
+              target1 = b"_OBJC_CLASS_$_XCTCommandLineToolHelper"
+              replace1 = b"_OBJC_CLASS_$_XCTestCase\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+              
+              target2 = b"_OBJC_METACLASS_$_XCTCommandLineToolHelper"
+              replace2 = b"_OBJC_METACLASS_$_XCTestCase\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+              
+              target3 = b"__OBJC_CLASS_$_XCTCommandLineToolHelper"
+              replace3 = b"__OBJC_CLASS_$_XCTestCase\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+              
+              target4 = b"__OBJC_METACLASS_$_XCTCommandLineToolHelper"
+              replace4 = b"__OBJC_METACLASS_$_XCTestCase\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+              
+              if target1 in slice_d: slice_d = slice_d.replace(target1, replace1); patched = True
+              if target2 in slice_d: slice_d = slice_d.replace(target2, replace2); patched = True
+              if target3 in slice_d: slice_d = slice_d.replace(target3, replace3); patched = True
+              if target4 in slice_d: slice_d = slice_d.replace(target4, replace4); patched = True
+              
+              if patched:
+                  print(f"[+] Successfully patched and renamed binary strings inside slice at offset {offset} for {fp}")
                   d[offset:offset+size] = slice_d
                   return True
               return False
