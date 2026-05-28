@@ -29,6 +29,7 @@ workflows:
           
           # Append the minimal class interface and implementation to satisfy early-launch constraints.
           # Includes a binary constructor (__attribute__((constructor))) to prevent dead_strip optimizations.
+          # Utilizes an ARC-compliant (__autoreleasing) pointer signature to bypass modern compiler checks.
           cat << 'EOF' >> "$TARGET_M_FILE"
 
           // =========================================================================
@@ -37,11 +38,11 @@ workflows:
           #import <Foundation/Foundation.h>
           
           @interface XCTCommandLineToolHelper : NSObject
-          + (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id*)arg4;
+          + (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id __autoreleasing *)arg4;
           @end
 
           @implementation XCTCommandLineToolHelper
-          + (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id*)arg4 {
+          + (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id __autoreleasing *)arg4 {
               NSLog(@"[+] WDA Launch Stub: configurationFromCommandLineArguments invoked successfully.");
               return nil;
           }
