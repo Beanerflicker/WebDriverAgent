@@ -8,63 +8,25 @@ workflows:
         distribution_type: development
         bundle_identifier: com.beanerflicker.WebDriverAgentRunner.xctrunner
     scripts:
-      - name: Inject iOS 17+ Launch Compatibility Implementation
+      - name: Force Modern iOS 17 Deployment Target
         script: |
           set -e
-          echo "[*] Locating target test runner compilation source..."
-          TARGET_M_FILE=$(find . -path "*WebDriverAgentRunner*/*" \( -name "UITestingUITests.m" -o -name "UITestingUITests.mm" \) | head -n 1)
-          if [ -z "$TARGET_M_FILE" ]; then
-              echo "[!] Warning: UITestingUITests.m not found. Searching for any runner source..."
-              TARGET_M_FILE=$(find . -path "*WebDriverAgentRunner*/*" -name "*.m" | head -n 1)
-          fi
-          if [ -z "$TARGET_M_FILE" ]; then
-              echo "[-] Error: No compiled source targets inside WebDriverAgentRunner folder."
-              exit 1
-          fi
-          
-          echo "[+] Resetting target file to pristine git state to clear any cached corruptions..."
-          git checkout -- "$TARGET_M_FILE"
-          
-          echo "[+] Appending clean, unescaped Obj-C implementation stub into: $TARGET_M_FILE"
-          
-          # 1. Write a guaranteed newline to prevent line-merging syntax issues
-          echo "" >> "$TARGET_M_FILE"
-          
-          # 2. Append the exact implementation block that satisfies the XCTest headers
-          echo "@implementation XCTCommandLineToolHelper" >> "$TARGET_M_FILE"
-          echo "+ (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id __autoreleasing *)arg4 {" >> "$TARGET_M_FILE"
-          echo "    return nil;" >> "$TARGET_M_FILE"
-          echo "}" >> "$TARGET_M_FILE"
-          echo "@end" >> "$TARGET_M_FILE"
-          echo "" >> "$TARGET_M_FILE"
-          echo "__attribute__((constructor)) static void force_link_compatibility_stub(void) {" >> "$TARGET_M_FILE"
-          echo "    [XCTCommandLineToolHelper class];" >> "$TARGET_M_FILE"
-          echo "}" >> "$TARGET_M_FILE"
-          
-          echo "[+] Dynamic append completed successfully."
+          echo "[*] Upgrading all target deployment settings to iOS 17.0..."
+          # Update the pbxproj files directly to force Xcode to discard legacy templates
+          find . -name "project.pbxproj" -exec sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*/IPHONEOS_DEPLOYMENT_TARGET = 17.0/g' {} +
+          echo "[+] Project target upgrade complete."
 
       - name: Build WDA
         script: |
           set -e
-          echo "[*] Building WebDriverAgent..."
-          
-          # Capture build log to display exact compile errors if it fails
-          if ! xcodebuild build-for-testing \
+          xcodebuild build-for-testing \
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner \
             -destination "generic/platform=iOS" \
             -derivedDataPath ./build \
             COMPILER_INDEX_STORE_ENABLE=NO \
             RUN_CLANG_STATIC_ANALYZER=NO \
-            GCC_TREAT_WARNINGS_AS_ERRORS=NO \
-            WARNING_CFLAGS="-Wno-error" \
-            CODE_SIGNING_ALLOWED=NO \
-            IPHONEOS_DEPLOYMENT_TARGET=17.0 > /tmp/xcodebuild.log 2>&1; then
-              echo "[-] xcodebuild failed. Printing raw compilation logs to identify the exact cause:"
-              cat /tmp/xcodebuild.log
-              exit 1
-          fi
-          echo "[+] Build succeeded."
+            CODE_SIGNING_ALLOWED=NO
 
       - name: Bundle and Package WDA
         script: |
