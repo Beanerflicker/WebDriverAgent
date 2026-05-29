@@ -8,48 +8,6 @@ workflows:
         distribution_type: development
         bundle_identifier: com.beanerflicker.WebDriverAgentRunner.xctrunner
     scripts:
-      - name: Inject iOS 17+ Launch Compatibility Implementation
-        script: |
-          set -e
-          echo "[*] Locating target core library compilation source..."
-          # Target WebDriverAgentLib instead of WebDriverAgentRunner to avoid XCTest header conflicts
-          TARGET_M_FILE=$(find . -path "*WebDriverAgentLib*/*" -name "WDAConfiguration.m" | head -n 1)
-          if [ -z "$TARGET_M_FILE" ]; then
-              echo "[!] Warning: WDAConfiguration.m not found. Searching for any library source..."
-              TARGET_M_FILE=$(find . -path "*WebDriverAgentLib*/*" -name "*.m" | head -n 1)
-          fi
-          if [ -z "$TARGET_M_FILE" ]; then
-              echo "[-] Error: No compiled source targets inside WebDriverAgentLib folder."
-              exit 1
-          fi
-          
-          # Idempotency Check to prevent duplicate compilation symbols if script runs multiple times
-          if grep -q "XCTCommandLineToolHelper" "$TARGET_M_FILE"; then
-              echo "[*] Compatibility stub is already present in $TARGET_M_FILE. Skipping injection."
-          else
-              echo "[+] Appending clean Obj-C implementation stub into: $TARGET_M_FILE"
-              
-              # 1. Write a guaranteed newline to prevent line-merging syntax issues
-              echo "" >> "$TARGET_M_FILE"
-              
-              # 2. Append the exact implementation block to the pure library source
-              echo "@interface XCTCommandLineToolHelper : NSObject" >> "$TARGET_M_FILE"
-              echo "+ (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id *)arg4;" >> "$TARGET_M_FILE"
-              echo "@end" >> "$TARGET_M_FILE"
-              echo "" >> "$TARGET_M_FILE"
-              echo "@implementation XCTCommandLineToolHelper" >> "$TARGET_M_FILE"
-              echo "+ (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id *)arg4 {" >> "$TARGET_M_FILE"
-              echo "    return nil;" >> "$TARGET_M_FILE"
-              echo "}" >> "$TARGET_M_FILE"
-              echo "@end" >> "$TARGET_M_FILE"
-              echo "" >> "$TARGET_M_FILE"
-              echo "__attribute__((constructor)) static void force_link_compatibility_stub(void) {" >> "$TARGET_M_FILE"
-              echo "    [XCTCommandLineToolHelper class];" >> "$TARGET_M_FILE"
-              echo "}" >> "$TARGET_M_FILE"
-              
-              echo "[+] Dynamic append completed successfully."
-          fi
-
       - name: Build WDA
         script: |
           set -e
@@ -62,7 +20,7 @@ workflows:
             RUN_CLANG_STATIC_ANALYZER=NO \
             CODE_SIGNING_ALLOWED=NO
 
-      - name: Bundle and package developer frameworks
+      - name: Bundle and Package WDA
         script: |
           set -e
           APP=$(find ./build/Build/Products/Debug-iphoneos -name "*.app" | head -n 1)
@@ -76,89 +34,13 @@ workflows:
           /usr/libexec/PlistBuddy -c "Delete :LSBackgroundOnly" "$APP/Info.plist" || true
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.beanerflicker.WebDriverAgentRunner.xctrunner" "$APP/Info.plist"
           
-          # Setup bundle structure
-          XCODE_DEV=$(xcode-select -p)
-          mkdir -p "$APP/Frameworks"
-          
-          echo "[+] Copying runtime interoperability dylibs and frameworks..."
-          cp "$XCODE_DEV/Platforms/iPhoneOS.platform/Developer/usr/lib/lib_TestingInterop.dylib" "$APP/Frameworks/"
-          cp -R "$XCODE_DEV/Platforms/iPhoneOS.platform/Developer/Library/Frameworks/_Testing_Foundation.framework" "$APP/Frameworks/"
-          cp -R "$XCODE_DEV/Platforms/iPhoneOS.platform/Developer/Library/Frameworks/XCTest.framework" "$APP/Frameworks/"
-          
-          # Patch binaries using Python to make XCTest and _Testing_Foundation weak links
-          cat << 'EOF' > /tmp/patch_weak.py
-          import struct, sys, os
-          def patch_macho_bytes(d, offset, size, fp):
-              slice_d = d[offset:offset+size]
-              if len(slice_d) < 4: return False
-              magic = struct.unpack("<I", slice_d[:4])[0]
-              if magic != 0xFEEDFACF: return False
-              ncmds = struct.unpack("<I", slice_d[16:20])[0]
-              cursor = 32
-              patched = False
-              for _ in range(ncmds):
-                  if cursor + 8 > len(slice_d): break
-                  cmd, sz = struct.unpack("<II", slice_d[cursor:cursor+8])
-                  if cmd == 0x0c: # LC_LOAD_DYLIB
-                      off = struct.unpack("<I", slice_d[cursor+8:cursor+12])[0]
-                      name = slice_d[cursor+off:cursor+sz].split(b"\00")[0]
-                      if b"_Testing_Foundation" in name or b"XCTest" in name:
-                          struct.pack_into("<I", slice_d, cursor, 0x80000018) # LC_LOAD_WEAK_DYLIB
-                          patched = True
-                  cursor += sz
-              if patched:
-                  print(f"[+] Patched lazy binding inside slice at offset {offset} for {fp}")
-                  d[offset:offset+size] = slice_d
-                  return True
-              return False
-
-          def patch_file(fp):
-              try:
-                  with open(fp, "rb") as f: d = bytearray(f.read())
-              except Exception: return
-              if len(d) < 4: return
-              fat_magic = struct.unpack(">I", d[:4])[0]
-              if fat_magic == 0xCAFEBABE:
-                  nfat_arch = struct.unpack(">I", d[4:8])[0]
-                  modified = False
-                  for i in range(nfat_arch):
-                      arch_offset = 8 + (i * 20)
-                      cputype, cpusubtype, offset, size, align = struct.unpack(">IIIII", d[arch_offset:arch_offset+20])
-                      if patch_macho_bytes(d, offset, size, fp): modified = True
-                  if modified:
-                      with open(fp, "wb") as f: f.write(d)
-              else:
-                  magic_thin = struct.unpack("<I", d[:4])[0]
-                  if magic_thin == 0xFEEDFACF:
-                      if patch_macho_bytes(d, 0, len(d), fp):
-                          with open(fp, "wb") as f: f.write(d)
-
-          app_path = sys.argv[1]
-          for root, dirs, files in os.walk(app_path):
-              for file in files:
-                  fp = os.path.join(root, file)
-                  if file.endswith(('.png', '.plist', '.car', '.provision', '.xml', '.strings', '.nib', '.db')): continue
-                  patch_file(fp)
-          EOF
-          python3 /tmp/patch_weak.py "$APP"
-
-          # Extract entitlements
+          # Extract entitlements from the provisioning profile
           EXP_KEY=$(security find-identity -v -p codesigning | grep "Development" | head -n 1 | awk -F'"' '{print $2}')
           PROF=$(grep -l "com.beanerflicker.WebDriverAgentRunner.xctrunner" /Users/builder/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision | head -n 1)
           cp "$PROF" "$APP/embedded.mobileprovision"
           python3 -c "import plistlib; data=open('$APP/embedded.mobileprovision','rb').read(); start=data.find(b'<?xml'); end=data.find(b'</plist>')+8; plist=plistlib.loads(data[start:end]); plistlib.dump(plist['Entitlements'], open('/tmp/entitlements.plist','wb'))"
 
-          # Recursive signing of nested binaries (Inside-Out)
-          XCT_FRAMEWORKS="$APP/PlugIns/WebDriverAgentRunner.xctest/Frameworks"
-          if [ -d "$XCT_FRAMEWORKS" ]; then
-              find "$XCT_FRAMEWORKS" -type f \( -name "*.dylib" -o -name "WebDriverAgentLib" \) | while read -r lib; do
-                  codesign --force --sign "$EXP_KEY" --timestamp=none "$lib"
-              done
-              find "$XCT_FRAMEWORKS" -name "*.framework" | while read -r fw; do
-                  codesign --force --sign "$EXP_KEY" --timestamp=none "$fw"
-              done
-          fi
-          
+          # Sign native WebDriverAgent target binaries only
           XCT_PLUGINS="$APP/PlugIns"
           if [ -d "$XCT_PLUGINS" ]; then
               find "$XCT_PLUGINS" -name "*.xctest" | while read -r plugin; do
@@ -168,15 +50,12 @@ workflows:
           
           APP_FRAMEWORKS="$APP/Frameworks"
           if [ -d "$APP_FRAMEWORKS" ]; then
-              find "$APP_FRAMEWORKS" -type f -name "*.dylib" | while read -r dylib; do
-                  codesign --force --sign "$EXP_KEY" --timestamp=none "$dylib"
-              done
               find "$APP_FRAMEWORKS" -name "*.framework" | while read -r framework; do
                   codesign --force --sign "$EXP_KEY" --timestamp=none "$framework"
               done
           fi
           
-          # Final sign on the host app bundle
+          # Sign the host app bundle with extracted developer entitlements
           codesign --force --sign "$EXP_KEY" --entitlements /tmp/entitlements.plist --timestamp=none "$APP"
 
       - name: Package IPA
