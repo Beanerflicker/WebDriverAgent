@@ -26,12 +26,16 @@ workflows:
           if grep -q "XCTCommandLineToolHelper" "$TARGET_M_FILE"; then
               echo "[*] Compatibility stub is already present in $TARGET_M_FILE. Skipping injection."
           else
-              echo "[+] Appending clean Obj-C implementation stub into: $TARGET_M_FILE"
+              echo "[+] Appending clean, ARC-compliant Obj-C stub into: $TARGET_M_FILE"
               
               # 1. Write a guaranteed newline to prevent line-merging syntax issues
               echo "" >> "$TARGET_M_FILE"
               
-              # 2. Append the implementation block (matching the existing SDK headers)
+              # 2. Append the interface and implementation, strictly qualified with ARC autoreleasing pointers
+              echo "@interface XCTCommandLineToolHelper : NSObject" >> "$TARGET_M_FILE"
+              echo "+ (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id __autoreleasing *)arg4;" >> "$TARGET_M_FILE"
+              echo "@end" >> "$TARGET_M_FILE"
+              echo "" >> "$TARGET_M_FILE"
               echo "@implementation XCTCommandLineToolHelper" >> "$TARGET_M_FILE"
               echo "+ (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id __autoreleasing *)arg4 {" >> "$TARGET_M_FILE"
               echo "    return nil;" >> "$TARGET_M_FILE"
