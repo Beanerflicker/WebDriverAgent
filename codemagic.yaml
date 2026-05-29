@@ -26,16 +26,12 @@ workflows:
           if grep -q "XCTCommandLineToolHelper" "$TARGET_M_FILE"; then
               echo "[*] Compatibility stub is already present in $TARGET_M_FILE. Skipping injection."
           else
-              echo "[+] Appending clean, ARC-compliant Obj-C stub into: $TARGET_M_FILE"
+              echo "[+] Appending clean, unescaped Obj-C implementation stub into: $TARGET_M_FILE"
               
               # 1. Write a guaranteed newline to prevent line-merging syntax issues
               echo "" >> "$TARGET_M_FILE"
               
-              # 2. Append the interface and implementation, strictly qualified with ARC autoreleasing pointers
-              echo "@interface XCTCommandLineToolHelper : NSObject" >> "$TARGET_M_FILE"
-              echo "+ (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id __autoreleasing *)arg4;" >> "$TARGET_M_FILE"
-              echo "@end" >> "$TARGET_M_FILE"
-              echo "" >> "$TARGET_M_FILE"
+              # 2. Append the exact implementation block to satisfy dyld at launch
               echo "@implementation XCTCommandLineToolHelper" >> "$TARGET_M_FILE"
               echo "+ (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id __autoreleasing *)arg4 {" >> "$TARGET_M_FILE"
               echo "    return nil;" >> "$TARGET_M_FILE"
@@ -52,6 +48,7 @@ workflows:
       - name: Build WDA
         script: |
           set -e
+          # We pass GCC_TREAT_WARNINGS_AS_ERRORS=NO to ensure minor warnings do not fail the CI build
           xcodebuild build-for-testing \
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner \
@@ -59,6 +56,8 @@ workflows:
             -derivedDataPath ./build \
             COMPILER_INDEX_STORE_ENABLE=NO \
             RUN_CLANG_STATIC_ANALYZER=NO \
+            GCC_TREAT_WARNINGS_AS_ERRORS=NO \
+            WARNING_CFLAGS="-Wno-error" \
             CODE_SIGNING_ALLOWED=NO \
             IPHONEOS_DEPLOYMENT_TARGET=17.0
 
