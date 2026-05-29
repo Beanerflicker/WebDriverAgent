@@ -22,34 +22,34 @@ workflows:
               exit 1
           fi
           
-          # Idempotency Check to prevent duplicate compilation symbols if script runs multiple times
-          if grep -q "XCTCommandLineToolHelper" "$TARGET_M_FILE"; then
-              echo "[*] Compatibility stub is already present in $TARGET_M_FILE. Skipping injection."
-          else
-              echo "[+] Appending clean, unescaped Obj-C implementation stub into: $TARGET_M_FILE"
-              
-              # 1. Write a guaranteed newline to prevent line-merging syntax issues
-              echo "" >> "$TARGET_M_FILE"
-              
-              # 2. Append the exact implementation block to satisfy dyld at launch
-              echo "@implementation XCTCommandLineToolHelper" >> "$TARGET_M_FILE"
-              echo "+ (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id __autoreleasing *)arg4 {" >> "$TARGET_M_FILE"
-              echo "    return nil;" >> "$TARGET_M_FILE"
-              echo "}" >> "$TARGET_M_FILE"
-              echo "@end" >> "$TARGET_M_FILE"
-              echo "" >> "$TARGET_M_FILE"
-              echo "__attribute__((constructor)) static void force_link_compatibility_stub(void) {" >> "$TARGET_M_FILE"
-              echo "    [XCTCommandLineToolHelper class];" >> "$TARGET_M_FILE"
-              echo "}" >> "$TARGET_M_FILE"
-              
-              echo "[+] Dynamic append completed successfully."
-          fi
+          echo "[+] Resetting target file to pristine git state to clear any cached corruptions..."
+          git checkout -- "$TARGET_M_FILE"
+          
+          echo "[+] Appending clean, unescaped Obj-C implementation stub into: $TARGET_M_FILE"
+          
+          # 1. Write a guaranteed newline to prevent line-merging syntax issues
+          echo "" >> "$TARGET_M_FILE"
+          
+          # 2. Append the exact implementation block that satisfies the XCTest headers
+          echo "@implementation XCTCommandLineToolHelper" >> "$TARGET_M_FILE"
+          echo "+ (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id __autoreleasing *)arg4 {" >> "$TARGET_M_FILE"
+          echo "    return nil;" >> "$TARGET_M_FILE"
+          echo "}" >> "$TARGET_M_FILE"
+          echo "@end" >> "$TARGET_M_FILE"
+          echo "" >> "$TARGET_M_FILE"
+          echo "__attribute__((constructor)) static void force_link_compatibility_stub(void) {" >> "$TARGET_M_FILE"
+          echo "    [XCTCommandLineToolHelper class];" >> "$TARGET_M_FILE"
+          echo "}" >> "$TARGET_M_FILE"
+          
+          echo "[+] Dynamic append completed successfully."
 
       - name: Build WDA
         script: |
           set -e
-          # We pass GCC_TREAT_WARNINGS_AS_ERRORS=NO to ensure minor warnings do not fail the CI build
-          xcodebuild build-for-testing \
+          echo "[*] Building WebDriverAgent..."
+          
+          # Capture build log to display exact compile errors if it fails
+          if ! xcodebuild build-for-testing \
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner \
             -destination "generic/platform=iOS" \
@@ -59,7 +59,12 @@ workflows:
             GCC_TREAT_WARNINGS_AS_ERRORS=NO \
             WARNING_CFLAGS="-Wno-error" \
             CODE_SIGNING_ALLOWED=NO \
-            IPHONEOS_DEPLOYMENT_TARGET=17.0
+            IPHONEOS_DEPLOYMENT_TARGET=17.0 > /tmp/xcodebuild.log 2>&1; then
+              echo "[-] xcodebuild failed. Printing raw compilation logs to identify the exact cause:"
+              cat /tmp/xcodebuild.log
+              exit 1
+          fi
+          echo "[+] Build succeeded."
 
       - name: Bundle and Package WDA
         script: |
