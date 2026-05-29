@@ -8,48 +8,6 @@ workflows:
         distribution_type: development
         bundle_identifier: com.beanerflicker.WebDriverAgentRunner.xctrunner
     scripts:
-      - name: Inject iOS 17+ Launch Compatibility Implementation
-        script: |
-          set -e
-          echo "[*] Locating target core library compilation source..."
-          # Target WebDriverAgentLib instead of WebDriverAgentRunner to avoid XCTest header conflicts
-          TARGET_M_FILE=$(find . -path "*WebDriverAgentLib*/*" -name "WDAConfiguration.m" | head -n 1)
-          if [ -z "$TARGET_M_FILE" ]; then
-              echo "[!] Warning: WDAConfiguration.m not found. Searching for any library source..."
-              TARGET_M_FILE=$(find . -path "*WebDriverAgentLib*/*" -name "*.m" | head -n 1)
-          fi
-          if [ -z "$TARGET_M_FILE" ]; then
-              echo "[-] Error: No compiled source targets inside WebDriverAgentLib folder."
-              exit 1
-          fi
-          
-          # Idempotency Check to prevent duplicate compilation symbols if script runs multiple times
-          if grep -q "XCTCommandLineToolHelper" "$TARGET_M_FILE"; then
-              echo "[*] Compatibility stub is already present in $TARGET_M_FILE. Skipping injection."
-          else
-              echo "[+] Appending clean Obj-C implementation stub into: $TARGET_M_FILE"
-              
-              # 1. Write a guaranteed newline to prevent line-merging syntax issues
-              echo "" >> "$TARGET_M_FILE"
-              
-              # 2. Append the exact implementation block to the pure library source
-              echo "@interface XCTCommandLineToolHelper : NSObject" >> "$TARGET_M_FILE"
-              echo "+ (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id *)arg4;" >> "$TARGET_M_FILE"
-              echo "@end" >> "$TARGET_M_FILE"
-              echo "" >> "$TARGET_M_FILE"
-              echo "@implementation XCTCommandLineToolHelper" >> "$TARGET_M_FILE"
-              echo "+ (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id *)arg4 {" >> "$TARGET_M_FILE"
-              echo "    return nil;" >> "$TARGET_M_FILE"
-              echo "}" >> "$TARGET_M_FILE"
-              echo "@end" >> "$TARGET_M_FILE"
-              echo "" >> "$TARGET_M_FILE"
-              echo "__attribute__((constructor)) static void force_link_compatibility_stub(void) {" >> "$TARGET_M_FILE"
-              echo "    [XCTCommandLineToolHelper class];" >> "$TARGET_M_FILE"
-              echo "}" >> "$TARGET_M_FILE"
-              
-              echo "[+] Dynamic append completed successfully."
-          fi
-
       - name: Build WDA
         script: |
           set -e
@@ -77,67 +35,58 @@ workflows:
           /usr/libexec/PlistBuddy -c "Delete :LSBackgroundOnly" "$APP/Info.plist" || true
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.beanerflicker.WebDriverAgentRunner.xctrunner" "$APP/Info.plist"
           
-          # Patch the main host executable using Python to make XCTest a weak link
-          cat << 'EOF' > /tmp/patch_weak.py
-          import struct, sys, os
-          def patch_macho_bytes(d, offset, size, fp):
-              slice_d = d[offset:offset+size]
-              if len(slice_d) < 4: return False
-              magic = struct.unpack("<I", slice_d[:4])[0]
-              if magic != 0xFEEDFACF: return False
-              ncmds = struct.unpack("<I", slice_d[16:20])[0]
-              cursor = 32
-              patched = False
-              for _ in range(ncmds):
-                  if cursor + 8 > len(slice_d): break
-                  cmd, sz = struct.unpack("<II", slice_d[cursor:cursor+8])
-                  if cmd == 0x0c: # LC_LOAD_DYLIB
-                      off = struct.unpack("<I", slice_d[cursor+8:cursor+12])[0]
-                      name = slice_d[cursor+off:cursor+sz].split(b"\00")[0]
-                      if b"_Testing_Foundation" in name or b"XCTest" in name:
-                          struct.pack_into("<I", slice_d, cursor, 0x80000018) # LC_LOAD_WEAK_DYLIB
-                          patched = True
-                  cursor += sz
-              if patched:
-                  print(f"[+] Patched load command to weak in slice at offset {offset} for {fp}")
-                  d[offset:offset+size] = slice_d
-                  return True
-              return False
+          # Binary-patch the host test runner to redirect XCTCommandLineToolHelper to NSObject
+          cat << 'EOF' > /tmp/patch_runner.py
+          import os, sys
 
-          def patch_file(fp):
+          def patch_file(filepath):
               try:
-                  with open(fp, "rb") as f: d = bytearray(f.read())
-              except Exception: return
-              if len(d) < 4: return
-              fat_magic = struct.unpack(">I", d[:4])[0]
-              if fat_magic == 0xCAFEBABE:
-                  nfat_arch = struct.unpack(">I", d[4:8])[0]
-                  modified = False
-                  for i in range(nfat_arch):
-                      arch_offset = 8 + (i * 20)
-                      cputype, cpusubtype, offset, size, align = struct.unpack(">IIIII", d[arch_offset:arch_offset+20])
-                      if patch_macho_bytes(d, offset, size, fp): modified = True
-                  if modified:
-                      with open(fp, "wb") as f: f.write(d)
+                  with open(filepath, 'rb') as f:
+                      data = bytearray(f.read())
+              except Exception:
+                  print(f"[-] Error opening file: {filepath}")
+                  return
+              
+              patched = False
+              
+              # Patch the dynamic symbol name (38 bytes)
+              # Overwrite with _OBJC_CLASS_$_NSObject + 16 null bytes of padding
+              old_sym = b'_OBJC_CLASS_$_XCTCommandLineToolHelper'
+              new_sym = b'_OBJC_CLASS_$_NSObject' + b'\x00' * 16
+              if old_sym in data:
+                  idx = 0
+                  while True:
+                      idx = data.find(old_sym, idx)
+                      if idx == -1: break
+                      data[idx:idx+38] = new_sym
+                      patched = True
+                      idx += 38
+                      
+              # Patch the raw class name string (24 bytes)
+              # Overwrite with NSObject + 16 null bytes of padding
+              old_class = b'XCTCommandLineToolHelper'
+              new_class = b'NSObject' + b'\x00' * 16
+              if old_class in data:
+                  idx = 0
+                  while True:
+                      idx = data.find(old_class, idx)
+                      if idx == -1: break
+                      data[idx:idx+24] = new_class
+                      patched = True
+                      idx += 24
+                      
+              if patched:
+                  with open(filepath, 'wb') as f:
+                      f.write(data)
+                  print(f"[+] Successfully binary-patched symbols in {filepath}")
               else:
-                  magic_thin = struct.unpack("<I", d[:4])[0]
-                  if magic_thin == 0xFEEDFACF:
-                      if patch_macho_bytes(d, 0, len(d), fp):
-                          with open(fp, "wb") as f: f.write(d)
+                  print(f"[-] Targeting symbols not found in {filepath}")
 
-          app_path = sys.argv[1]
-          if os.path.isdir(app_path):
-              for root, dirs, files in os.walk(app_path):
-                  for file in files:
-                      fp = os.path.join(root, file)
-                      if file.endswith(('.png', '.plist', '.car', '.provision', '.xml', '.strings', '.nib', '.db')): continue
-                      patch_file(fp)
-          else:
-              patch_file(app_path)
+          patch_file(sys.argv[1])
           EOF
           
-          # Patch only the host test runner executable to make its XCTest link weak
-          python3 /tmp/patch_weak.py "$APP/WebDriverAgentRunner-Runner"
+          echo "[+] Running binary patch on the host test runner..."
+          python3 /tmp/patch_runner.py "$APP/WebDriverAgentRunner-Runner"
 
           # Extract entitlements from the provisioning profile
           EXP_KEY=$(security find-identity -v -p codesigning | grep "Development" | head -n 1 | awk -F'"' '{print $2}')
