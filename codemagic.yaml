@@ -11,6 +11,7 @@ workflows:
       - name: Build WDA
         script: |
           set -e
+          # Overriding the IPHONEOS_DEPLOYMENT_TARGET globally prevents Xcode from generating legacy compatibility references
           xcodebuild build-for-testing \
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner \
@@ -18,7 +19,8 @@ workflows:
             -derivedDataPath ./build \
             COMPILER_INDEX_STORE_ENABLE=NO \
             RUN_CLANG_STATIC_ANALYZER=NO \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO \
+            IPHONEOS_DEPLOYMENT_TARGET=17.0
 
       - name: Bundle and Package WDA
         script: |
