@@ -11,6 +11,7 @@ workflows:
       - name: Build WDA
         script: |
           set -e
+          # Compile natively targeting modern iOS 17.0 specifications
           xcodebuild build-for-testing \
             -project WebDriverAgent.xcodeproj \
             -scheme WebDriverAgentRunner \
@@ -35,8 +36,9 @@ workflows:
           /usr/libexec/PlistBuddy -c "Delete :LSBackgroundOnly" "$APP/Info.plist" || true
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.beanerflicker.WebDriverAgentRunner.xctrunner" "$APP/Info.plist"
           
-          # Exact-match binary-patch script to swap XCTCommandLineToolHelper with UIActivityViewController
-          cat << 'EOF' > /tmp/patch_runner.py
+          # Exact-match binary-patch script to swap XCTCommandLineToolHelper with XCTestConfiguration (space-padded)
+          # We use 10 spaces of indentation to keep the YAML parser and Bash parser perfectly happy
+          cat << '          EOF' > /tmp/patch_runner.py
           import sys
 
           def patch_file(filepath):
@@ -47,18 +49,35 @@ workflows:
                   print(f"[-] Error opening file: {filepath}")
                   return
               
-              old_str = b'XCTCommandLineToolHelper'
-              new_str = b'UIActivityViewController'
+              patched = False
               
-              if old_str in data:
+              # Patch the dynamic symbol name (38 bytes)
+              # Overwrite with _OBJC_CLASS_$_XCTestConfiguration + 5 space characters of padding (0x20)
+              old_sym = b'_OBJC_CLASS_$_XCTCommandLineToolHelper'
+              new_sym = b'_OBJC_CLASS_$_XCTestConfiguration' + b' ' * 5
+              if old_sym in data:
                   idx = 0
                   while True:
-                      idx = data.find(old_str, idx)
+                      idx = data.find(old_sym, idx)
                       if idx == -1: break
-                      # Direct in-place swap of 24-character symbols (no null-byte padding)
-                      data[idx:idx+24] = new_str
+                      data[idx:idx+38] = new_sym
+                      patched = True
+                      idx += 38
+                      
+              # Patch the raw class name string (24 bytes)
+              # Overwrite with XCTestConfiguration + 5 space characters of padding (0x20)
+              old_class = b'XCTCommandLineToolHelper'
+              new_class = b'XCTestConfiguration' + b' ' * 5
+              if old_class in data:
+                  idx = 0
+                  while True:
+                      idx = data.find(old_class, idx)
+                      if idx == -1: break
+                      data[idx:idx+24] = new_class
+                      patched = True
                       idx += 24
                       
+              if patched:
                   with open(filepath, 'wb') as f:
                       f.write(data)
                   print(f"[+] Successfully binary-patched symbols in {filepath}")
