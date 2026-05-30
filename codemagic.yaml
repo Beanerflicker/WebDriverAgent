@@ -8,13 +8,21 @@ workflows:
         distribution_type: development
         bundle_identifier: com.beanerflicker.WebDriverAgentRunner.xctrunner
     scripts:
-      - name: Force Modern iOS 17 Deployment Target
+      - name: Revert to Pristine Upstream Appium State
         script: |
           set -e
-          echo "[*] Upgrading all target deployment settings to iOS 17.0..."
-          # Update the pbxproj files directly to force Xcode to discard legacy templates
-          find . -name "project.pbxproj" -exec sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]*/IPHONEOS_DEPLOYMENT_TARGET = 17.0/g' {} +
-          echo "[+] Project target upgrade complete."
+          echo "[*] Cleaning local workspace..."
+          git checkout -- . || true
+          
+          # Add the official, pristine Appium repository as a remote to discard any local fork pollution
+          echo "[*] Fetching clean files from official Appium upstream..."
+          git remote add upstream https://github.com/appium/WebDriverAgent.git || true
+          git fetch upstream
+          
+          # Force the runner files to match the official, modern, unpolluted versions
+          git checkout upstream/master -- WebDriverAgentRunner/UITestingUITests.m || true
+          git checkout upstream/master -- WebDriverAgentRunner/UITestingUITests.mm || true
+          echo "[+] Workspace successfully restored to clean Appium master state."
 
       - name: Build WDA
         script: |
@@ -63,7 +71,7 @@ workflows:
               done
           fi
           
-          # Sign the host app bundle with extracted developer entitlements (Pristine structure preserved)
+          # Sign the host app bundle with extracted developer entitlements
           codesign --force --sign "$EXP_KEY" --entitlements /tmp/entitlements.plist --timestamp=none "$APP"
 
       - name: Package IPA
