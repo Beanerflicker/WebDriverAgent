@@ -8,21 +8,34 @@ workflows:
         distribution_type: development
         bundle_identifier: com.beanerflicker.WebDriverAgentRunner.xctrunner
     scripts:
-      - name: Revert to Pristine Upstream Appium State
+      - name: Inject Compatibility Category into Core Library
         script: |
           set -e
-          echo "[*] Cleaning local workspace..."
-          git checkout -- . || true
+          echo "[*] Locating core library compilation source..."
+          TARGET_M_FILE=$(find . -path "*WebDriverAgentLib*/*" -name "WDAConfiguration.m" | head -n 1)
+          if [ -z "$TARGET_M_FILE" ]; then
+              echo "[!] Warning: WDAConfiguration.m not found. Searching for any library source..."
+              TARGET_M_FILE=$(find . -path "*WebDriverAgentLib*/*" -name "*.m" | head -n 1)
+          fi
+          if [ -z "$TARGET_M_FILE" ]; then
+              echo "[-] Error: No compiled source targets inside WebDriverAgentLib folder."
+              exit 1
+          fi
           
-          # Add the official, pristine Appium repository as a remote to discard any local fork pollution
-          echo "[*] Fetching clean files from official Appium upstream..."
-          git remote add upstream https://github.com/appium/WebDriverAgent.git || true
-          git fetch upstream
+          echo "[+] Resetting target file to pristine git state to clear any cached corruptions..."
+          git checkout -- "$TARGET_M_FILE"
           
-          # Force the runner files to match the official, modern, unpolluted versions
-          git checkout upstream/master -- WebDriverAgentRunner/UITestingUITests.m || true
-          git checkout upstream/master -- WebDriverAgentRunner/UITestingUITests.mm || true
-          echo "[+] Workspace successfully restored to clean Appium master state."
+          # Append Obj-C category on UIPresentationController (pure, non-XCTest library file)
+          echo "" >> "$TARGET_M_FILE"
+          echo "@interface UIPresentationController (WDAStub)" >> "$TARGET_M_FILE"
+          echo "@end" >> "$TARGET_M_FILE"
+          echo "" >> "$TARGET_M_FILE"
+          echo "@implementation UIPresentationController (WDAStub)" >> "$TARGET_M_FILE"
+          echo "+ (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id *)arg4 {" >> "$TARGET_M_FILE"
+          echo "    return nil;" >> "$TARGET_M_FILE"
+          echo "}" >> "$TARGET_M_FILE"
+          echo "@end" >> "$TARGET_M_FILE"
+          echo "[+] Compatibility category appended successfully."
 
       - name: Build WDA
         script: |
@@ -34,7 +47,8 @@ workflows:
             -derivedDataPath ./build \
             COMPILER_INDEX_STORE_ENABLE=NO \
             RUN_CLANG_STATIC_ANALYZER=NO \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO \
+            IPHONEOS_DEPLOYMENT_TARGET=17.0
 
       - name: Bundle and Package WDA
         script: |
@@ -50,6 +64,60 @@ workflows:
           /usr/libexec/PlistBuddy -c "Delete :LSBackgroundOnly" "$APP/Info.plist" || true
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.beanerflicker.WebDriverAgentRunner.xctrunner" "$APP/Info.plist"
           
+          # Exact-match binary-patch script to swap XCTCommandLineToolHelper with UIPresentationController
+          # 24-character exact match (no spaces or null-byte padding needed)
+          cat << '          EOF' > /tmp/patch_runner.py
+          import sys
+
+          def patch_file(filepath):
+              try:
+                  with open(filepath, 'rb') as f:
+                      data = bytearray(f.read())
+              except Exception:
+                  print(f"[-] Error opening file: {filepath}")
+                  return
+              
+              patched = False
+              
+              # Patch the dynamic symbol name (38 bytes)
+              # Overwrite with _OBJC_CLASS_$_UIPresentationController (exactly 38 characters)
+              old_sym = b'_OBJC_CLASS_$_XCTCommandLineToolHelper'
+              new_sym = b'_OBJC_CLASS_$_UIPresentationController'
+              if old_sym in data:
+                  idx = 0
+                  while True:
+                      idx = data.find(old_sym, idx)
+                      if idx == -1: break
+                      data[idx:idx+38] = new_sym
+                      patched = True
+                      idx += 38
+                      
+              # Patch the raw class name string (24 bytes)
+              # Overwrite with UIPresentationController (exactly 24 characters)
+              old_class = b'XCTCommandLineToolHelper'
+              new_class = b'UIPresentationController'
+              if old_class in data:
+                  idx = 0
+                  while True:
+                      idx = data.find(old_class, idx)
+                      if idx == -1: break
+                      data[idx:idx+24] = new_class
+                      patched = True
+                      idx += 24
+                      
+              if patched:
+                  with open(filepath, 'wb') as f:
+                      f.write(data)
+                  print(f"[+] Successfully binary-patched symbols in {filepath}")
+              else:
+                  print(f"[-] Targeting symbols not found in {filepath}")
+
+          patch_file(sys.argv[1])
+          EOF
+          
+          echo "[+] Running exact-match binary patch on the host test runner..."
+          python3 /tmp/patch_runner.py "$APP/WebDriverAgentRunner-Runner"
+
           # Extract entitlements from the provisioning profile
           EXP_KEY=$(security find-identity -v -p codesigning | grep "Development" | head -n 1 | awk -F'"' '{print $2}')
           PROF=$(grep -l "com.beanerflicker.WebDriverAgentRunner.xctrunner" /Users/builder/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision | head -n 1)
@@ -71,7 +139,7 @@ workflows:
               done
           fi
           
-          # Sign the host app bundle with extracted developer entitlements
+          # Sign the host app bundle with extracted developer entitlements (Pristine structure preserved)
           codesign --force --sign "$EXP_KEY" --entitlements /tmp/entitlements.plist --timestamp=none "$APP"
 
       - name: Package IPA
