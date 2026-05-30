@@ -139,34 +139,64 @@ workflows:
           cp "$PROF" "$APP/embedded.mobileprovision"
           python3 -c "import plistlib; data=open('$APP/embedded.mobileprovision','rb').read(); start=data.find(b'<?xml'); end=data.find(b'</plist>')+8; plist=plistlib.loads(data[start:end]); plistlib.dump(plist['Entitlements'], open('/tmp/entitlements.plist','wb'))"
 
-          # Recursive, inside-out signing of WDA's compiled binaries (including WebDriverAgentLib)
-          XCT_PLUGINS="$APP/PlugIns"
-          if [ -d "$XCT_PLUGINS" ]; then
-              find "$XCT_PLUGINS" -type f \( -name "*.dylib" -o -name "WebDriverAgentLib" \) | while read -r lib; do
-                  echo "[+] Signing nested binary: $lib"
-                  codesign --force --sign "$EXP_KEY" --timestamp=none "$lib"
-              done
-              find "$XCT_PLUGINS" -name "*.framework" | while read -r fw; do
-                  echo "[+] Signing nested framework: $fw"
-                  codesign --force --sign "$EXP_KEY" --timestamp=none "$fw"
-              done
-              find "$XCT_PLUGINS" -name "*.xctest" | while read -r plugin; do
-                  echo "[+] Signing nested plugin: $plugin"
-                  codesign --force --sign "$EXP_KEY" --timestamp=none "$plugin"
-              done
-          fi
+          # Write the ultimate, robust Python codesigning script
+          cat << '          EOF' > /tmp/sign_all.py
+          import os, sys, subprocess
+
+          app_path = sys.argv[1]
+          identity = sys.argv[2]
+          entitlements = sys.argv[3] if len(sys.argv) > 3 else None
+
+          # Walk the bundle and sign binaries first (inside-out)
+          all_files = []
+          for root, dirs, files in os.walk(app_path):
+              for file in files:
+                  fp = os.path.join(root, file)
+                  if file.endswith(('.png', '.plist', '.car', '.provision', '.xml', '.strings', '.nib', '.db', '.html', '.css', '.js')):
+                      continue
+                  all_files.append(fp)
+
+          # Deepest files first
+          all_files.sort(key=lambda x: len(x), reverse=True)
+
+          for fp in all_files:
+              try:
+                  with open(fp, 'rb') as f:
+                      magic = f.read(4)
+              except Exception:
+                  continue
+              
+              # Check for Mach-O thin or fat binary magic bytes
+              if magic in (b'\xcf\xfa\xed\xfe', b'\xbe\xba\xfe\xca'):
+                  print(f"[+] Signing binary: {fp}")
+                  cmd = ['codesign', '--force', '--sign', identity, '--timestamp=none']
+                  if entitlements and fp == os.path.join(app_path, os.path.basename(app_path).replace('.app', '')):
+                      print(f"[+] Applying entitlements to main executable: {fp}")
+                      cmd += ['--entitlements', entitlements]
+                  
+                  cmd.append(fp)
+                  subprocess.run(cmd, check=True)
+
+          # Finally, sign the bundles themselves (.xctest, .framework, .app)
+          bundles = []
+          for root, dirs, files in os.walk(app_path):
+              for d in dirs:
+                  dp = os.path.join(root, d)
+                  if d.endswith(('.xctest', '.framework', '.app')):
+                      bundles.append(dp)
           
-          APP_FRAMEWORKS="$APP/Frameworks"
-          if [ -d "$APP_FRAMEWORKS" ]; then
-              find "$APP_FRAMEWORKS" -name "*.framework" | while read -r framework; do
-                  echo "[+] Signing framework bundle: $framework"
-                  codesign --force --sign "$EXP_KEY" --timestamp=none "$framework"
-              done
-          fi
-          
-          # Sign the host app bundle with extracted developer entitlements
-          echo "[+] Signing main host app bundle: $APP"
-          codesign --force --sign "$EXP_KEY" --entitlements /tmp/entitlements.plist --timestamp=none "$APP"
+          bundles.sort(key=lambda x: len(x), reverse=True)
+          for bp in bundles:
+              print(f"[+] Signing bundle: {bp}")
+              cmd = ['codesign', '--force', '--sign', identity, '--timestamp=none']
+              if entitlements and bp == app_path:
+                  cmd += ['--entitlements', entitlements]
+              cmd.append(bp)
+              subprocess.run(cmd, check=True)
+          EOF
+
+          echo "[+] Running ultimate, robust codesigning walk..."
+          python3 /tmp/sign_all.py "$APP" "$EXP_KEY" "/tmp/entitlements.plist"
 
       - name: Package IPA
         script: |
