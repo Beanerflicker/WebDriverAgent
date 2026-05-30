@@ -79,10 +79,24 @@ workflows:
           /usr/libexec/PlistBuddy -c "Delete :LSBackgroundOnly" "$APP/Info.plist" || true
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.beanerflicker.WebDriverAgentRunner.xctrunner" "$APP/Info.plist"
           
-          # Exact-match binary-patch script to swap XCTCommandLineToolHelper with UIPresentationController
-          # 24-character exact match (no spaces or null-byte padding needed)
+          # Exact-match binary-patch script with LC_CODE_SIGNATURE offset protection
           cat << '          EOF' > /tmp/patch_runner.py
-          import sys
+          import sys, struct
+
+          def get_code_signature_offset(data):
+              if len(data) < 32: return len(data)
+              magic = struct.unpack("<I", data[:4])[0]
+              if magic != 0xFEEDFACF: return len(data)
+              ncmds = struct.unpack("<I", data[16:20])[0]
+              cursor = 32
+              for _ in range(ncmds):
+                  if cursor + 8 > len(data): break
+                  cmd, sz = struct.unpack("<II", data[cursor:cursor+8])
+                  if cmd == 0x1d: # LC_CODE_SIGNATURE
+                      dataoff = struct.unpack("<I", data[cursor+8:cursor+12])[0]
+                      return dataoff
+                  cursor += sz
+              return len(data)
 
           def patch_file(filepath):
               try:
@@ -92,38 +106,33 @@ workflows:
                   print(f"[-] Error opening file: {filepath}")
                   return
               
+              # Find the exact offset where the dynamic code signature begins
+              sig_offset = get_code_signature_offset(data)
+              body = data[:sig_offset]
               patched = False
               
               # Patch the dynamic symbol name (38 bytes)
               # Overwrite with _OBJC_CLASS_$_UIPresentationController (exactly 38 characters)
               old_sym = b'_OBJC_CLASS_$_XCTCommandLineToolHelper'
               new_sym = b'_OBJC_CLASS_$_UIPresentationController'
-              if old_sym in data:
-                  idx = 0
-                  while True:
-                      idx = data.find(old_sym, idx)
-                      if idx == -1: break
-                      data[idx:idx+38] = new_sym
-                      patched = True
-                      idx += 38
+              if old_sym in body:
+                  body = body.replace(old_sym, new_sym)
+                  patched = True
                       
               # Patch the raw class name string (24 bytes)
               # Overwrite with UIPresentationController (exactly 24 characters)
               old_class = b'XCTCommandLineToolHelper'
               new_class = b'UIPresentationController'
-              if old_class in data:
-                  idx = 0
-                  while True:
-                      idx = data.find(old_class, idx)
-                      if idx == -1: break
-                      data[idx:idx+24] = new_class
-                      patched = True
-                      idx += 24
+              if old_class in body:
+                  body = body.replace(old_class, new_class)
+                  patched = True
                       
               if patched:
+                  # Overwrite body but leave original signature block untouched for codesign
+                  data[:sig_offset] = body
                   with open(filepath, 'wb') as f:
                       f.write(data)
-                  print(f"[+] Successfully binary-patched symbols in {filepath}")
+                  print(f"[+] Successfully binary-patched symbols (excluding LC_CODE_SIGNATURE) in {filepath}")
               else:
                   print(f"[-] Targeting symbols not found in {filepath}")
 
@@ -139,64 +148,23 @@ workflows:
           cp "$PROF" "$APP/embedded.mobileprovision"
           python3 -c "import plistlib; data=open('$APP/embedded.mobileprovision','rb').read(); start=data.find(b'<?xml'); end=data.find(b'</plist>')+8; plist=plistlib.loads(data[start:end]); plistlib.dump(plist['Entitlements'], open('/tmp/entitlements.plist','wb'))"
 
-          # Write the ultimate, robust Python codesigning script
-          cat << '          EOF' > /tmp/sign_all.py
-          import os, sys, subprocess
-
-          app_path = sys.argv[1]
-          identity = sys.argv[2]
-          entitlements = sys.argv[3] if len(sys.argv) > 3 else None
-
-          # Walk the bundle and sign binaries first (inside-out)
-          all_files = []
-          for root, dirs, files in os.walk(app_path):
-              for file in files:
-                  fp = os.path.join(root, file)
-                  if file.endswith(('.png', '.plist', '.car', '.provision', '.xml', '.strings', '.nib', '.db', '.html', '.css', '.js')):
-                      continue
-                  all_files.append(fp)
-
-          # Deepest files first
-          all_files.sort(key=lambda x: len(x), reverse=True)
-
-          for fp in all_files:
-              try:
-                  with open(fp, 'rb') as f:
-                      magic = f.read(4)
-              except Exception:
-                  continue
-              
-              # Check for Mach-O thin or fat binary magic bytes
-              if magic in (b'\xcf\xfa\xed\xfe', b'\xbe\xba\xfe\xca'):
-                  print(f"[+] Signing binary: {fp}")
-                  cmd = ['codesign', '--force', '--sign', identity, '--timestamp=none']
-                  if entitlements and fp == os.path.join(app_path, os.path.basename(app_path).replace('.app', '')):
-                      print(f"[+] Applying entitlements to main executable: {fp}")
-                      cmd += ['--entitlements', entitlements]
-                  
-                  cmd.append(fp)
-                  subprocess.run(cmd, check=True)
-
-          # Finally, sign the bundles themselves (.xctest, .framework, .app)
-          bundles = []
-          for root, dirs, files in os.walk(app_path):
-              for d in dirs:
-                  dp = os.path.join(root, d)
-                  if d.endswith(('.xctest', '.framework', '.app')):
-                      bundles.append(dp)
+          # Sign native WebDriverAgent target bundles (Inside-Out)
+          XCT_PLUGINS="$APP/PlugIns"
+          if [ -d "$XCT_PLUGINS" ]; then
+              find "$XCT_PLUGINS" -name "*.xctest" | while read -r plugin; do
+                  codesign --force --sign "$EXP_KEY" --timestamp=none "$plugin"
+              done
+          fi
           
-          bundles.sort(key=lambda x: len(x), reverse=True)
-          for bp in bundles:
-              print(f"[+] Signing bundle: {bp}")
-              cmd = ['codesign', '--force', '--sign', identity, '--timestamp=none']
-              if entitlements and bp == app_path:
-                  cmd += ['--entitlements', entitlements]
-              cmd.append(bp)
-              subprocess.run(cmd, check=True)
-          EOF
-
-          echo "[+] Running ultimate, robust codesigning walk..."
-          python3 /tmp/sign_all.py "$APP" "$EXP_KEY" "/tmp/entitlements.plist"
+          APP_FRAMEWORKS="$APP/Frameworks"
+          if [ -d "$APP_FRAMEWORKS" ]; then
+              find "$APP_FRAMEWORKS" -name "*.framework" | while read -r framework; do
+                  codesign --force --sign "$EXP_KEY" --timestamp=none "$framework"
+              done
+          fi
+          
+          # Sign the host app bundle with extracted developer entitlements (Pristine structure preserved)
+          codesign --force --sign "$EXP_KEY" --entitlements /tmp/entitlements.plist --timestamp=none "$APP"
 
       - name: Package IPA
         script: |
