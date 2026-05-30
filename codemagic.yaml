@@ -19,51 +19,48 @@ workflows:
           git remote add upstream https://github.com/appium/WebDriverAgent.git || true
           git fetch upstream
           
-          # Force the compiler-failing runner files to match the clean upstream versions
+          # Force all runner files to match the clean upstream versions
           git checkout upstream/master -- WebDriverAgentRunner/UITestingUITests.m || true
           git checkout upstream/master -- WebDriverAgentRunner/UITestingUITests.mm || true
+          git checkout upstream/master -- WebDriverAgentRunner/WebDriverAgentRunnerRunner.m || true
           echo "[+] Workspace successfully aligned with clean Appium master."
 
-      - name: Inject Compatibility Category into Core Library
+      - name: Inject Compatibility Stub into Runner Main Entrypoint
         script: |
           set -e
-          echo "[*] Locating core library compilation source..."
-          TARGET_M_FILE=$(find . -path "*WebDriverAgentLib*/*" -name "WDAConfiguration.m" | head -n 1)
+          echo "[*] Locating runner main entrypoint source..."
+          TARGET_M_FILE=$(find . -path "*WebDriverAgentRunner*/*" -name "WebDriverAgentRunnerRunner.m" | head -n 1)
           if [ -z "$TARGET_M_FILE" ]; then
-              echo "[!] Warning: WDAConfiguration.m not found. Searching for any library source..."
-              TARGET_M_FILE=$(find . -path "*WebDriverAgentLib*/*" -name "*.m" | head -n 1)
-          fi
-          if [ -z "$TARGET_M_FILE" ]; then
-              echo "[-] Error: No compiled source targets inside WebDriverAgentLib folder."
+              echo "[-] Error: WebDriverAgentRunnerRunner.m not found."
               exit 1
           fi
           
-          echo "[+] Resetting target file to pristine state..."
-          git checkout -- "$TARGET_M_FILE"
-          
-          # Append Obj-C category on UIPresentationController (pure, non-XCTest library file)
+          # Append the clean class stub directly into the runner's compiled main source file
           echo "" >> "$TARGET_M_FILE"
-          echo "@interface UIPresentationController (WDAStub)" >> "$TARGET_M_FILE"
+          echo "@interface XCTCommandLineToolHelper : NSObject" >> "$TARGET_M_FILE"
+          echo "+ (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id *)arg4;" >> "$TARGET_M_FILE"
           echo "@end" >> "$TARGET_M_FILE"
           echo "" >> "$TARGET_M_FILE"
-          echo "@implementation UIPresentationController (WDAStub)" >> "$TARGET_M_FILE"
+          echo "@implementation XCTCommandLineToolHelper" >> "$TARGET_M_FILE"
           echo "+ (id)configurationFromCommandLineArguments:(id)arg1 userDefaults:(id)arg2 requiresTestBundleURL:(BOOL)arg3 outError:(id *)arg4 {" >> "$TARGET_M_FILE"
           echo "    return nil;" >> "$TARGET_M_FILE"
           echo "}" >> "$TARGET_M_FILE"
           echo "@end" >> "$TARGET_M_FILE"
-          echo "[+] Compatibility category appended successfully."
+          echo "[+] Compatibility stub injected cleanly into runner main source."
 
       - name: Build WDA
         script: |
           set -e
-          xcodebuild build-for-testing \
+          # Compile the runner app natively from source using the modern application scheme
+          xcodebuild build \
             -project WebDriverAgent.xcodeproj \
-            -scheme WebDriverAgentRunner \
+            -scheme WebDriverAgentRunner_Runner \
             -destination "generic/platform=iOS" \
             -derivedDataPath ./build \
             COMPILER_INDEX_STORE_ENABLE=NO \
             RUN_CLANG_STATIC_ANALYZER=NO \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO \
+            IPHONEOS_DEPLOYMENT_TARGET=17.0
 
       - name: Bundle and Package WDA
         script: |
@@ -79,79 +76,25 @@ workflows:
           /usr/libexec/PlistBuddy -c "Delete :LSBackgroundOnly" "$APP/Info.plist" || true
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.beanerflicker.WebDriverAgentRunner.xctrunner" "$APP/Info.plist"
           
-          # Exact-match binary-patch script with LC_CODE_SIGNATURE offset protection
-          cat << '          EOF' > /tmp/patch_runner.py
-          import sys, struct
-
-          def get_code_signature_offset(data):
-              if len(data) < 32: return len(data)
-              magic = struct.unpack("<I", data[:4])[0]
-              if magic != 0xFEEDFACF: return len(data)
-              ncmds = struct.unpack("<I", data[16:20])[0]
-              cursor = 32
-              for _ in range(ncmds):
-                  if cursor + 8 > len(data): break
-                  cmd, sz = struct.unpack("<II", data[cursor:cursor+8])
-                  if cmd == 0x1d: # LC_CODE_SIGNATURE
-                      dataoff = struct.unpack("<I", data[cursor+8:cursor+12])[0]
-                      return dataoff
-                  cursor += sz
-              return len(data)
-
-          def patch_file(filepath):
-              try:
-                  with open(filepath, 'rb') as f:
-                      data = bytearray(f.read())
-              except Exception:
-                  print(f"[-] Error opening file: {filepath}")
-                  return
-              
-              # Find the exact offset where the dynamic code signature begins
-              sig_offset = get_code_signature_offset(data)
-              body = data[:sig_offset]
-              patched = False
-              
-              # Patch the dynamic symbol name (38 bytes)
-              # Overwrite with _OBJC_CLASS_$_UIPresentationController (exactly 38 characters)
-              old_sym = b'_OBJC_CLASS_$_XCTCommandLineToolHelper'
-              new_sym = b'_OBJC_CLASS_$_UIPresentationController'
-              if old_sym in body:
-                  body = body.replace(old_sym, new_sym)
-                  patched = True
-                      
-              # Patch the raw class name string (24 bytes)
-              # Overwrite with UIPresentationController (exactly 24 characters)
-              old_class = b'XCTCommandLineToolHelper'
-              new_class = b'UIPresentationController'
-              if old_class in body:
-                  body = body.replace(old_class, new_class)
-                  patched = True
-                      
-              if patched:
-                  # Overwrite body but leave original signature block untouched for codesign
-                  data[:sig_offset] = body
-                  with open(filepath, 'wb') as f:
-                      f.write(data)
-                  print(f"[+] Successfully binary-patched symbols (excluding LC_CODE_SIGNATURE) in {filepath}")
-              else:
-                  print(f"[-] Targeting symbols not found in {filepath}")
-
-          patch_file(sys.argv[1])
-          EOF
-          
-          echo "[+] Running exact-match binary patch on the host test runner..."
-          python3 /tmp/patch_runner.py "$APP/WebDriverAgentRunner-Runner"
-
           # Extract entitlements from the provisioning profile
           EXP_KEY=$(security find-identity -v -p codesigning | grep "Development" | head -n 1 | awk -F'"' '{print $2}')
           PROF=$(grep -l "com.beanerflicker.WebDriverAgentRunner.xctrunner" /Users/builder/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision | head -n 1)
           cp "$PROF" "$APP/embedded.mobileprovision"
           python3 -c "import plistlib; data=open('$APP/embedded.mobileprovision','rb').read(); start=data.find(b'<?xml'); end=data.find(b'</plist>')+8; plist=plistlib.loads(data[start:end]); plistlib.dump(plist['Entitlements'], open('/tmp/entitlements.plist','wb'))"
 
-          # Sign native WebDriverAgent target bundles (Inside-Out)
+          # Sign WDA's compiled framework bundles inside-out (pushed clean)
           XCT_PLUGINS="$APP/PlugIns"
           if [ -d "$XCT_PLUGINS" ]; then
+              find "$XCT_PLUGINS" -type f \( -name "*.dylib" -o -name "WebDriverAgentLib" \) | while read -r lib; do
+                  echo "[+] Signing nested binary: $lib"
+                  codesign --force --sign "$EXP_KEY" --timestamp=none "$lib"
+              done
+              find "$XCT_PLUGINS" -name "*.framework" | while read -r fw; do
+                  echo "[+] Signing nested framework: $fw"
+                  codesign --force --sign "$EXP_KEY" --timestamp=none "$fw"
+              done
               find "$XCT_PLUGINS" -name "*.xctest" | while read -r plugin; do
+                  echo "[+] Signing nested plugin: $plugin"
                   codesign --force --sign "$EXP_KEY" --timestamp=none "$plugin"
               done
           fi
@@ -159,11 +102,13 @@ workflows:
           APP_FRAMEWORKS="$APP/Frameworks"
           if [ -d "$APP_FRAMEWORKS" ]; then
               find "$APP_FRAMEWORKS" -name "*.framework" | while read -r framework; do
+                  echo "[+] Signing framework bundle: $framework"
                   codesign --force --sign "$EXP_KEY" --timestamp=none "$framework"
               done
           fi
           
           # Sign the host app bundle with extracted developer entitlements (Pristine structure preserved)
+          echo "[+] Signing main host app bundle: $APP"
           codesign --force --sign "$EXP_KEY" --entitlements /tmp/entitlements.plist --timestamp=none "$APP"
 
       - name: Package IPA
